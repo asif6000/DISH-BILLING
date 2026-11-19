@@ -1,0 +1,82 @@
+{
+  "name": "ava-cable-management",
+  "productName": "AVA Cable Management System",
+  "version": "1.0.0",
+  "description": "AVA Cable Management System - Offline Cable TV / Dish Line Business ERP",
+  "main": "out/main/index.js",
+  "author": "AVA Systems",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "esbuild tests/business.test.ts --bundle --platform=node --format=cjs --outfile=tests/.test-bundle.cjs --alias:electron=./tests/electron-stub.cjs && node tests/.test-bundle.cjs",
+    "dist": "electron-vite build && electron-builder --win",
+    "dist:portable": "electron-vite build && electron-builder --win portable"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "esbuild": "^0.28.2"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "clsx": "^2.1.1",
+    "electron": "^38.8.6",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "jspdf": "^2.5.2",
+    "jspdf-autotable": "^3.8.4",
+    "lucide-react": "^0.462.0",
+    "postcss": "^8.4.49",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0",
+    "recharts": "^2.13.3",
+    "tailwindcss": "^3.4.15",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "xlsx": "^0.18.5"
+  },
+  "build": {
+    "appId": "com.ava.cablemanagement",
+    "productName": "AVA Cable Management",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AVA Cable Management",
+      "artifactName": "AVA-Cable-Management-Setup-${version}.exe"
+    },
+    "publish": null
+  },
+  "allowScripts": {
+    "electron@38.8.6": true,
+    "esbuild@0.21.5": true
+  }
+}

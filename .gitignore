@@ -1,0 +1,11 @@
+node_modules/
+out/
+release/
+dist/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+backups/
+.DS_Store
+tests/.test-bundle.cjs
