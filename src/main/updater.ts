@@ -4,12 +4,26 @@
 // Force-update rule: while an update is found but not yet installed, login is
 // blocked (main process throws UPDATE_REQUIRED and the renderer shows UpdateGate).
 import { BrowserWindow, ipcMain, dialog, app } from 'electron'
+import { join } from 'path'
+import fs from 'fs'
 import { getSetting, setSetting, logActivity } from './db'
 import { requireAuth } from './ipc/auth'
 import { updateStatus, isUpdatePending, UpdateStatus } from './updateState'
 
 export const GITHUB_OWNER = 'asif6000'
 export const GITHUB_REPO = 'DISH-BILLING'
+
+// File logger so update problems are always diagnosable (userData/updater.log)
+let logFile: string | null = null
+function ulog(level: string, msg: string): void {
+  try {
+    if (!logFile) logFile = join(app.getPath('userData'), 'updater.log')
+    // keep the log small
+    try { if (fs.statSync(logFile).size > 500_000) fs.writeFileSync(logFile, '') } catch { /* ignore */ }
+    fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${level}: ${msg}\n`)
+  } catch { /* ignore */ }
+  if (level === 'ERROR') console.error('[updater]', msg)
+}
 
 let autoUpdater: any = null
 
@@ -39,6 +53,12 @@ export function initAutoUpdater(mainWindow: BrowserWindow): void {
   }
   autoUpdater = updater
   updater.autoDownload = true // internet available + update found → downloads automatically
+  updater.logger = {
+    info: (m: any) => ulog('INFO', String(m)),
+    warn: (m: any) => ulog('WARN', String(m)),
+    error: (m: any) => ulog('ERROR', String(m)),
+    debug: (m: any) => ulog('DEBUG', String(m))
+  } as any
 
   updater.on('checking-for-update', () => setStatus('checking'))
   updater.on('update-available', (info: any) => setStatus('available', info))
@@ -68,10 +88,10 @@ export function initAutoUpdater(mainWindow: BrowserWindow): void {
     }, 10_000)
   })
 
-  // check on startup AND every hour — internet থাকলেই আপডেট নিজে নিজে নামবে ও ইনস্টল হবে
+  // check on startup AND every 5 minutes — internet থাকলেই আপডেট নিজে নিজে নামবে ও ইনস্টল হবে
   if (getSetting('auto_update_check', '1') === '1') {
     setTimeout(() => checkForUpdates(false).catch(() => {}), 8000)
-    setInterval(() => checkForUpdates(false).catch(() => {}), 60 * 60 * 1000)
+    setInterval(() => checkForUpdates(false).catch(() => {}), 5 * 60 * 1000)
   }
 }
 

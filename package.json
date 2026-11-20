@@ -1,7 +1,7 @@
 {
   "name": "ava-cable-management",
   "productName": "AVA Cable Management System",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "AVA Cable Management System - Offline Cable TV / Dish Line Business ERP",
   "main": "out/main/index.js",
   "author": "AVA Systems",
