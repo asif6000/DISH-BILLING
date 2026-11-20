@@ -51,7 +51,8 @@
     "publish": {
       "provider": "github",
       "owner": "asif6000",
-      "repo": "DISH-BILLING"
+      "repo": "DISH-BILLING",
+      "releaseType": "release"
     },
     "directories": {
       "output": "release"
