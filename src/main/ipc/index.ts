@@ -17,6 +17,7 @@ import { registerMiscIpc } from './misc'
 import { registerUpdaterIpc } from '../updater'
 import { registerSubscriptionIpc } from '../subscription'
 import { registerRenewalIpc } from './renewal'
+import { registerAccountsIpc } from './accounts'
 
 export * from './auth'
 
@@ -35,4 +36,5 @@ export function registerAllIpc(): void {
   registerUpdaterIpc()
   registerSubscriptionIpc()
   registerRenewalIpc()
+  registerAccountsIpc()
 }

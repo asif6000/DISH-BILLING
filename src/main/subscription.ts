@@ -116,6 +116,11 @@ export function supabaseConfigured(): boolean {
   return Boolean(sbUrl() && sbKey())
 }
 
+// Reused by other modules (user accounts) for anon-key Supabase calls
+export async function sbAnonFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  return sbFetch(path, init)
+}
+
 // Unique id of this installation (sent with every request)
 export function getAppId(): string {
   let id = getSetting('sub_app_id', '')

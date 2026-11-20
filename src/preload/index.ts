@@ -82,6 +82,12 @@ const api = {
     list: (params?: any) => invoke('renewal:list', params),
     renew: (d: any) => invoke('renewal:renew', d)
   },
+  userAccounts: {
+    sync: () => invoke('accounts:sync'),
+    signup: (d: any) => invoke('accounts:signup', d),
+    forgot: (username: string) => invoke('accounts:forgot', username),
+    checkRemote: () => invoke('accounts:checkRemote')
+  },
   dashboard: {
     stats: (month: string) => invoke('dashboard:stats', month),
     dailyCollection: (month: string) => invoke('dashboard:dailyCollection', month),

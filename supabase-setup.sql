@@ -51,3 +51,41 @@ grant select on sub_status to anon;
 --    Easier way: open admin-panel.html and use the first-run "Create admin" form.
 -- insert into sub_admins (username, password_hash)
 -- values ('admin', '<sha256-hex-of-password>');
+
+-- ============================================================
+-- 5) USER ACCOUNT APPROVAL (desktop app login accounts)
+--    Signup -> pending -> Approve in admin panel -> login works
+-- ============================================================
+create table if not exists app_users (
+  id uuid primary key default gen_random_uuid(),
+  username text not null unique,
+  full_name text,
+  mobile text,
+  status text not null default 'pending',  -- pending | approved | rejected
+  reset_hash text,                          -- new bcrypt password hash set by admin (reset)
+  created_at timestamptz not null default now(),
+  approved_at timestamptz
+);
+
+create table if not exists password_resets (
+  id uuid primary key default gen_random_uuid(),
+  username text not null,
+  requested_at timestamptz not null default now()
+);
+
+alter table app_users enable row level security;
+alter table password_resets enable row level security;
+
+drop policy if exists "anon can sign up" on app_users;
+create policy "anon can sign up"
+  on app_users for insert to anon with check (true);
+
+drop policy if exists "anon can request password reset" on password_resets;
+create policy "anon can request password reset"
+  on password_resets for insert to anon with check (true);
+
+-- Read-only status view for the app (no password hashes, only reset hash for reset flow)
+create or replace view app_user_status as
+  select username, status, reset_hash from app_users;
+
+grant select on app_user_status to anon;

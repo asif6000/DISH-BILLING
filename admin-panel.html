@@ -47,10 +47,13 @@
 <script type="module">
 // Supabase JS from CDN (works offline-file too, needs internet when used)
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+// bcrypt (same algorithm as the desktop app) for password resets
+import bcrypt from 'https://esm.sh/bcryptjs@2.4.3'
 
 const $app = document.getElementById('app')
 const LS_URL = 'ava_sb_url', LS_KEY = 'ava_sb_key'
-let sb = null, admin = null, filter = 'pending'
+let sb = null, admin = null, subFilter = 'pending', accFilter = 'pending'
+let tab = 'subscription'
 
 const h = (html) => { const d = document.createElement('div'); d.innerHTML = html; return d.firstElementChild }
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
@@ -136,12 +139,22 @@ function renderLogin(msg) {
 }
 
 async function renderPanel() {
+  const nav = h(`<div class="filters">
+      <button data-t="subscription" class="${tab === 'subscription' ? 'active' : ''}">${'সাবস্ক্রিপশন'}</button>
+      <button data-t="accounts" class="${tab === 'accounts' ? 'active' : ''}">${'ইউজার অ্যাকাউন্ট'}</button>
+    </div>`)
+  $app.replaceChildren(nav)
+  if (tab === 'accounts') return renderAccounts()
+  return renderSubscription()
+}
+
+async function renderSubscription() {
   const { data: rows, error } = await sb.from('sub_requests').select('*').order('created_at', { ascending: false }).limit(200)
   if (error) { $app.replaceChildren(h(`<div class="card err">Load ব্যর্থ: ${esc(error.message)}</div>`)); return }
 
   const counts = { pending: 0, approved: 0, rejected: 0, all: rows.length }
   rows.forEach(r => { if (counts[r.status] !== undefined) counts[r.status]++ })
-  const shown = rows.filter(r => filter === 'all' ? true : r.status === filter)
+  const shown = rows.filter(r => subFilter === 'all' ? true : r.status === subFilter)
 
   const tbl = h(`<div>
     <div class="top">
@@ -150,7 +163,7 @@ async function renderPanel() {
     </div>
     <div class="filters">
       ${['pending','approved','rejected','all'].map(f =>
-        `<button data-f="${f}" class="${f === filter ? 'active' : ''}">${f} (${counts[f]})</button>`).join('')}
+        `<button data-f="${f}" class="${f === subFilter ? 'active' : ''}">${f} (${counts[f]})</button>`).join('')}
       <button id="rl">↻ Refresh</button>
     </div>
     <div class="card" style="padding:0; overflow-x:auto">
@@ -177,7 +190,7 @@ async function renderPanel() {
   $app.replaceChildren(tbl)
   tbl.querySelector('#lo').onclick = () => { admin = null; renderLogin() }
   tbl.querySelector('#rl').onclick = renderPanel
-  tbl.querySelectorAll('.filters button[data-f]').forEach(b => b.onclick = () => { filter = b.dataset.f; renderPanel() })
+  tbl.querySelectorAll('.filters button[data-f]').forEach(b => b.onclick = () => { subFilter = b.dataset.f; renderPanel() })
   const plusYear = () => { const d = new Date(); d.setDate(d.getDate() + 365); return d.toISOString().slice(0, 10) }
   tbl.querySelectorAll('[data-ok]').forEach(b => b.onclick = async () => {
     await sb.from('sub_requests').update({ status: 'approved', approved_at: new Date().toISOString(), expires_at: plusYear() }).eq('id', b.dataset.ok)
@@ -190,6 +203,79 @@ async function renderPanel() {
   tbl.querySelectorAll('[data-reset]').forEach(b => b.onclick = async () => {
     await sb.from('sub_requests').update({ status: 'pending', approved_at: null, expires_at: null }).eq('id', b.dataset.reset)
     renderPanel()
+  })
+}
+
+// ---------- user accounts tab ----------
+async function renderAccounts() {
+  const [{ data: users, error: e1 }, { data: resets, error: e2 }] = await Promise.all([
+    sb.from('app_users').select('*').order('created_at', { ascending: false }).limit(200),
+    sb.from('password_resets').select('*').order('requested_at', { ascending: false }).limit(20)
+  ])
+  if (e1) { $app.replaceChildren(h(`<div class="card err">Load ব্যর্থ: ${esc(e1.message)} — supabase-setup.sql-এর নতুন অংশ (app_users) রান করা আছে কিনা দেখুন।</div>`)); return }
+
+  const counts = { pending: 0, approved: 0, rejected: 0, all: users.length }
+  users.forEach(u => { if (counts[u.status] !== undefined) counts[u.status]++ })
+  const shown = users.filter(u => accFilter === 'all' ? true : u.status === accFilter)
+  const resetList = resets || []
+
+  const tbl = h(`<div>
+    <div class="top">
+      <div class="muted">লগইন: <b>${esc(admin)}</b></div>
+      <button class="btn-ghost" id="lo">Logout</button>
+    </div>
+    <div class="card" style="padding:14px">
+      <h2 style="font-size:14px">🔑 পাসওয়ার্ড রিসেট রিকোয়েস্ট (${resetList.length})</h2>
+      <p class="muted" style="margin:6px 0 10px">নিচের ইউজারের নতুন পাসওয়ার্ড দিন — অ্যাপ অটোমেটিক সেট করে নেবে (৩০ সেকেন্ডের মধ্যে)।</p>
+      ${resetList.length ? resetList.map(r => `
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid #1e293b">
+          <b class="mono">${esc(r.username)}</b>
+          <span class="muted mono">${esc((r.requested_at || '').slice(0, 16).replace('T', ' '))}</span>
+          <input type="password" id="np-${esc(r.id)}" placeholder="নতুন পাসওয়ার্ড (6+)" style="max-width:220px">
+          <button class="btn-ok" data-reset="${esc(r.username)}" data-rid="${esc(r.id)}">সেট করুন</button>
+        </div>`).join('') : '<div class="muted" style="padding:10px 0">কোনো রিকোয়েস্ট নেই</div>'}
+    </div>
+    <div class="filters">
+      ${['pending','approved','rejected','all'].map(f =>
+        `<button data-f="${f}" class="${f === accFilter ? 'active' : ''}">${f} (${counts[f]})</button>`).join('')}
+      <button id="rl">↻ Refresh</button>
+    </div>
+    <div class="card" style="padding:0; overflow-x:auto">
+      <table><thead><tr>
+        <th>Username</th><th>নাম / মোবাইল</th><th>স্ট্যাটাস</th><th>তারিখ</th><th>অ্যাকশন</th>
+      </tr></thead><tbody>
+        ${shown.length ? shown.map(u => `<tr>
+          <td class="mono"><b>${esc(u.username)}</b></td>
+          <td>${esc(u.full_name || '—')}<br><span class="muted mono">${esc(u.mobile || '')}</span></td>
+          <td><span class="badge b-${esc(u.status)}">${esc(u.status)}</span></td>
+          <td class="mono muted">${esc((u.created_at || '').slice(0, 10))}</td>
+          <td class="row-btns">
+            ${u.status !== 'approved' ? `<button class="btn-ok" data-ok="${esc(u.username)}">✓ Approve</button>` : ''}
+            ${u.status !== 'rejected' ? `<button class="btn-no" data-no="${esc(u.username)}">✕ Reject</button>` : ''}
+          </td>
+        </tr>`).join('') : '<tr><td colspan="5" class="muted" style="text-align:center;padding:30px">কোনো অ্যাকাউন্ট নেই</td></tr>'}
+      </tbody></table>
+    </div></div>`)
+
+  $app.replaceChildren(tbl)
+  tbl.querySelector('#lo').onclick = () => { admin = null; renderLogin() }
+  tbl.querySelector('#rl').onclick = renderPanel
+  tbl.querySelectorAll('.filters button[data-f]').forEach(b => b.onclick = () => { accFilter = b.dataset.f; renderAccounts() })
+  tbl.querySelectorAll('[data-ok]').forEach(b => b.onclick = async () => {
+    await sb.from('app_users').update({ status: 'approved', approved_at: new Date().toISOString() }).eq('username', b.dataset.ok)
+    renderAccounts()
+  })
+  tbl.querySelectorAll('[data-no]').forEach(b => b.onclick = async () => {
+    await sb.from('app_users').update({ status: 'rejected' }).eq('username', b.dataset.no)
+    renderAccounts()
+  })
+  tbl.querySelectorAll('[data-reset]').forEach(b => b.onclick = async () => {
+    const pw = tbl.querySelector('#np-' + CSS.escape(b.dataset.rid)).value
+    if (!pw || pw.length < 6) { alert('৬+ অক্ষরের পাসওয়ার্ড দিন'); return }
+    const hash = bcrypt.hashSync(pw, 10)
+    await sb.from('app_users').update({ reset_hash: hash }).eq('username', b.dataset.reset)
+    alert('সেট হয়েছে ✓ — কাস্টমারের অ্যাপ ৩০ সেকেন্ডের মধ্যে নতুন পাসওয়ার্ড নিয়ে নেবে')
+    renderAccounts()
   })
 }
 
