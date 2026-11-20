@@ -540,5 +540,24 @@ export const MIGRATIONS: string[] = [
   `-- Version 2: package renewal — customer package validity date
   ALTER TABLE customers ADD COLUMN validity_till TEXT;
   CREATE INDEX idx_customers_validity ON customers(validity_till);
+  `,
+
+  `-- Version 3: login_history.user_id must allow NULL (failed logins with unknown
+  -- usernames) and must survive user deletion.
+  CREATE TABLE login_history_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    username TEXT,
+    login_at TEXT NOT NULL DEFAULT (datetime('now')),
+    logout_at TEXT,
+    success INTEGER NOT NULL DEFAULT 1
+  );
+  INSERT INTO login_history_new (id, user_id, username, login_at, logout_at, success)
+    SELECT lh.id,
+           CASE WHEN u.id IS NULL THEN NULL ELSE lh.user_id END,
+           lh.username, lh.login_at, lh.logout_at, lh.success
+    FROM login_history lh LEFT JOIN users u ON u.id = lh.user_id;
+  DROP TABLE login_history;
+  ALTER TABLE login_history_new RENAME TO login_history;
   `
 ]

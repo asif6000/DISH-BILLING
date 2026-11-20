@@ -61,8 +61,8 @@ export function registerAuthIpc(): void {
     const db = getDb()
     const user = db.prepare('SELECT * FROM users WHERE username = ? AND status = \'active\'').get(username) as any
     if (!user || !bcrypt.compareSync(password, user.password_hash)) {
-      // unknown username -> user_id 0 (column is NOT NULL); login attempt is still recorded
-      db.prepare('INSERT INTO login_history (user_id, username, success) VALUES (?,?,0)').run(user ? user.id : 0, username)
+      // unknown username -> user_id NULL (column is nullable, FK-safe)
+      db.prepare('INSERT INTO login_history (user_id, username, success) VALUES (?,?,0)').run(user ? user.id : null, username)
       throw new Error('INVALID_CREDENTIALS')
     }
     const role = db.prepare('SELECT * FROM roles WHERE id = ?').get(user.role_id) as any
