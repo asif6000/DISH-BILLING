@@ -70,7 +70,8 @@
           ]
         }
       ],
-      "icon": "build/icon.ico"
+      "icon": "build/icon.ico",
+      "differentialPackage": false
     },
     "nsis": {
       "oneClick": false,
