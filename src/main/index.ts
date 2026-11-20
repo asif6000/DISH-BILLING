@@ -4,6 +4,7 @@ import { initDb, getDbPath, getSetting, integrityCheck } from './db'
 import { registerAllIpc } from './ipc'
 import { generateInternal } from './ipc/billing'
 import { autoBackup, backupsDir } from './ipc/backup'
+import { initAutoUpdater } from './updater'
 import { registerPrintIpc } from './print'
 
 let mainWindow: BrowserWindow | null = null
@@ -122,6 +123,7 @@ app.whenReady().then(() => {
   buildMenu()
   createWindow()
   startAutomation()
+  initAutoUpdater(mainWindow!)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

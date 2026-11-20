@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Building2, Save, Database, HardDriveDownload } from 'lucide-react'
+import { Building2, Save, Database, HardDriveDownload, RefreshCw, Download, Rocket } from 'lucide-react'
 import { useI18n } from '../lib/i18n'
 import { PageHeader, useToast, useReflist } from '../components/ui'
 import { errMsg } from '../lib/api'
@@ -92,12 +92,105 @@ export default function SettingsPage() {
         </div>
       </div>
       <div className="card p-4 mt-4">
+        <h3 className="font-semibold text-sm mb-3 flex items-center gap-2"><Rocket size={16} className="text-brand-600" /> {lang === 'bn' ? 'অটো-আপডেট সিস্টেম' : 'Auto Update System'}</h3>
+        <UpdateSettings />
+      </div>
+      <div className="card p-4 mt-4">
         <h3 className="font-semibold text-sm mb-3 flex items-center gap-2"><Database size={16} className="text-brand-600" /> {t('settings_system')}</h3>
         <div className="text-xs text-slate-500 space-y-1">
           <p><b>{t('databasePath')}:</b> <span className="font-mono">{dbPath}/../ava-cable.db</span></p>
           <p>{lang === 'bn' ? 'ডেটা ইনস্টলেশন ফোল্ডারের বাইরে (AppData) সংরক্ষিত — সফটওয়্যার আপডেট বা রিইনস্টলে ডেটা নিরাপদ থাকে।' : 'Data is stored in AppData (outside installation folder) — safe across updates and reinstalls.'}</p>
         </div>
         <button className="btn-secondary btn-sm mt-3" onClick={checkIntegrity}><HardDriveDownload size={14} /> {t('integrityCheck')}</button>
+      </div>
+    </div>
+  )
+}
+
+// ---------- Auto Update panel ----------
+function UpdateSettings() {
+  const { lang } = useI18n()
+  const toast = useToast()
+  const [url, setUrl] = useState('')
+  const [autoCheck, setAutoCheck] = useState(true)
+  const [version, setVersion] = useState('')
+  const [status, setStatus] = useState<any>({ state: 'idle' })
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    window.api.settings.getAll().then((s: any) => {
+      setUrl(s.update_url || '')
+      setAutoCheck(s.auto_update_check !== '0')
+    }).catch(() => {})
+    window.api.updater.appVersion().then(setVersion).catch(() => {})
+    window.api.updater.status().then(setStatus).catch(() => {})
+    const off = window.api.updater.onStatus((s: any) => setStatus(s))
+    return () => { off() }
+  }, [])
+
+  const save = async () => {
+    try {
+      await window.api.updater.configure(url, autoCheck)
+      toast.push('success', lang === 'bn' ? 'সংরক্ষিত হয়েছে' : 'Saved')
+    } catch (e) { toast.push('error', errMsg(e)) }
+  }
+
+  const check = async () => {
+    setBusy(true)
+    try {
+      await window.api.updater.check()
+    } catch (e) {
+      const m = errMsg(e)
+      if (m.includes('UPDATE_URL_NOT_SET')) toast.push('error', lang === 'bn' ? 'আগে আপডেট সার্ভার URL দিন' : 'Set the update server URL first')
+      else if (m.includes('net::ERR_INTERNET')) toast.push('error', lang === 'bn' ? 'ইন্টারনেট নেই — অফলাইন মোডে আপডেট চেক হয় না' : 'No internet — offline, update check skipped')
+      else toast.push('error', m)
+    } finally { setBusy(false) }
+  }
+
+  const stateText: Record<string, string> = {
+    idle: '—', checking: lang === 'bn' ? 'চেক করা হচ্ছে…' : 'Checking…',
+    available: lang === 'bn' ? 'নতুন ভার্সন পাওয়া গেছে!' : 'New version available!',
+    'not-available': lang === 'bn' ? 'আপ-টু-ডেট ✓' : 'Up to date ✓',
+    downloading: (lang === 'bn' ? 'ডাউনলোড হচ্ছে… ' : 'Downloading… ') + status.percent + '%',
+    downloaded: lang === 'bn' ? 'ডাউনলোড সম্পন্ন — ইনস্টল করুন' : 'Downloaded — ready to install',
+    error: lang === 'bn' ? 'ত্রুটি: ' + (status.info?.message || '') : 'Error: ' + (status.info?.message || ''),
+    'not-configured': lang === 'bn' ? 'সার্ভার URL কনফিগার করা হয়নি' : 'Server URL not configured'
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 text-xs text-slate-500">
+        <span>{lang === 'bn' ? 'বর্তমান ভার্সন:' : 'Current version:'}</span>
+        <b className="font-mono">{version}</b>
+        {status.state !== 'idle' && status.state !== 'error' && (
+          <span className="badge bg-brand-100 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300 ml-2">{stateText[status.state] || status.state}</span>
+        )}
+        {status.state === 'error' && <span className="badge bg-red-100 text-red-600 ml-2 truncate max-w-[300px]">{stateText.error}</span>}
+      </div>
+      <div>
+        <label className="label">{lang === 'bn' ? 'আপডেট সার্ভার URL' : 'Update Server URL'}</label>
+        <input className="input" placeholder="https://updates.yourdomain.com/ava-cable/" value={url} onChange={(e) => setUrl(e.target.value)} />
+        <p className="text-[11px] text-slate-400 mt-1">{lang === 'bn'
+          ? 'যেখানে latest.yml ও নতুন Setup EXE হোস্ট করা থাকবে (নিজের সার্ভার/হোস্টিং)। খালি রাখলে অটো-আপডেট বন্ধ থাকবে — অফলাইনে সমস্যা নেই।'
+          : 'Where latest.yml and the new Setup EXE are hosted (your own server). Leave empty to disable — offline use is unaffected.'}</p>
+      </div>
+      <label className="flex items-center gap-2 text-sm cursor-pointer">
+        <input type="checkbox" checked={autoCheck} onChange={(e) => setAutoCheck(e.target.checked)} className="w-4 h-4" />
+        {lang === 'bn' ? 'অ্যাপ চালু হলে স্বয়ংক্রিয়ভাবে আপডেট চেক করুন (ইন্টারনেট থাকলে)' : 'Check for updates automatically on app start (when internet available)'}
+      </label>
+      <div className="flex gap-2 flex-wrap">
+        <button className="btn-secondary" onClick={save}>{lang === 'bn' ? 'সংরক্ষণ' : 'Save'}</button>
+        <button className="btn-secondary" onClick={check} disabled={busy}><RefreshCw size={14} className={busy ? 'animate-spin' : ''} /> {lang === 'bn' ? 'এখনই চেক করুন' : 'Check Now'}</button>
+        {status.state === 'available' && (
+          <button className="btn-primary" onClick={() => window.api.updater.download().catch((e) => toast.push('error', errMsg(e)))}>
+            <Download size={14} /> {lang === 'bn' ? 'ডাউনলোড করুন' : 'Download'}
+          </button>
+        )}
+        {status.state === 'downloaded' && (
+          <button className="btn-success" onClick={() => window.api.updater.install().catch((e) => toast.push('error', errMsg(e)))}>
+            <Rocket size={14} /> {lang === 'bn' ? 'ইনস্টল ও রিস্টার্ট' : 'Install & Restart'}
+          </button>
+        )}
       </div>
     </div>
   )

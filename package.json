@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
+    "electron-updater": "^6.6.2",
     "esbuild": "^0.28.2"
   },
   "devDependencies": {
@@ -29,7 +30,7 @@
     "autoprefixer": "^10.4.20",
     "clsx": "^2.1.1",
     "electron": "^38.8.6",
-    "electron-builder": "^25.1.8",
+    "electron-builder": "^26.18.1",
     "electron-vite": "^2.3.0",
     "jspdf": "^2.5.2",
     "jspdf-autotable": "^3.8.4",
@@ -71,7 +72,8 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "AVA Cable Management",
-      "artifactName": "AVA-Cable-Management-Setup-${version}.exe"
+      "artifactName": "AVA-Cable-Management-Setup-${version}.exe",
+      "script": "installer.nsi"
     },
     "publish": null
   },

@@ -137,6 +137,19 @@ const api = {
   app: {
     info: () => invoke('app:info'),
     relaunch: () => invoke('app:relaunch')
+  },
+  updater: {
+    check: () => invoke('updater:check'),
+    download: () => invoke('updater:download'),
+    install: () => invoke('updater:install'),
+    status: () => invoke('updater:status'),
+    configure: (url: string, autoCheck: boolean) => invoke('updater:configure', url, autoCheck),
+    appVersion: () => invoke('updater:appVersion'),
+    onStatus: (cb: (s: any) => void) => {
+      const listener = (_: any, s: any) => cb(s)
+      ipcRenderer.on('updater:status', listener)
+      return () => ipcRenderer.removeListener('updater:status', listener)
+    }
   }
 }
 

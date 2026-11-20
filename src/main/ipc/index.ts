@@ -14,6 +14,7 @@ import { registerSettingsIpc } from './settings'
 import { registerBackupIpc } from './backup'
 import { registerInventoryIpc } from './inventory'
 import { registerMiscIpc } from './misc'
+import { registerUpdaterIpc } from '../updater'
 
 export * from './auth'
 
@@ -29,4 +30,5 @@ export function registerAllIpc(): void {
   registerBackupIpc()
   registerInventoryIpc()
   registerMiscIpc()
+  registerUpdaterIpc()
 }
