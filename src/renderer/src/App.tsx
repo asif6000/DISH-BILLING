@@ -31,6 +31,7 @@ import { MessagesPages } from './pages/MessagesPages'
 import { CollectorAssign } from './pages/CollectorAssign'
 import { DailyPaymentsPage } from './pages/DailyPayments'
 import { RenewalsPage } from './pages/Renewals'
+import SubscriptionRenewalPage from './pages/SubscriptionRenewal'
 import { ImportExportPage } from './pages/ImportExport'
 
 function AppInner() {
@@ -172,6 +173,7 @@ function AppInner() {
           <Route path="/security/logins" element={<SecurityPage tab="logins" />} />
           <Route path="/security/backup" element={<SecurityPage tab="backup" />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/subscription" element={<SubscriptionRenewalPage />} />
 
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Route>

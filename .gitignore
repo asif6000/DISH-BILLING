@@ -9,3 +9,4 @@ dist/
 backups/
 .DS_Store
 tests/.test-bundle.cjs
+*.bat

@@ -39,6 +39,7 @@ const bn: Record<string, string> = {
   nav_expenses: 'খরচ ব্যবস্থাপনা', nav_reports: 'রিপোর্ট ব্যবস্থাপনা', nav_marketing: 'মার্কেটিং ও সিআরএম',
   nav_automation: 'অটোমেশন ব্যবস্থাপনা', nav_branches: 'ব্রাঞ্চ ব্যবস্থাপনা', nav_security: 'নিরাপত্তা ও পারমিশন',
   nav_settings: 'সেটিংস',
+  nav_subscription: 'সাবস্ক্রিপশন রিনিউয়াল',
   // modules
   areas_all: 'সব এলাকা', areas_add: 'এলাকা যোগ করুন', areas_zones: 'জোন ব্যবস্থাপনা', areas_sub: 'সাব এলাকা',
   areas_roads: 'রোড ব্যবস্থাপনা', areas_customers: 'এলাকাভিত্তিক গ্রাহক', areas_collection: 'এলাকাভিত্তিক আদায়',
@@ -212,6 +213,7 @@ Object.assign(en, {
   nav_expenses: 'Expenses Management', nav_reports: 'Reports Management', nav_marketing: 'Marketing & CRM',
   nav_automation: 'Automation Management', nav_branches: 'Branch Management', nav_security: 'Security & Permission',
   nav_settings: 'Settings',
+  nav_subscription: 'Subscription Renewal',
   areas_all: 'All Areas', areas_add: 'Add Area', areas_zones: 'Zone Management', areas_sub: 'Sub Area',
   areas_roads: 'Road Management', areas_customers: 'Area-wise Customers', areas_collection: 'Area-wise Collection',
   network_devices: 'Network Devices', network_faults: 'Network Fault History',

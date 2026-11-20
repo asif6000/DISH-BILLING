@@ -1,0 +1,30 @@
+# Automatic release: push a tag (v1.0.6 etc.) -> GitHub builds the Windows
+# installer and publishes the Release (exe + blockmap + latest.yml) itself.
+# After that, every installed app auto-updates. No manual steps.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build & publish
+        run: npx electron-builder --win --publish always
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

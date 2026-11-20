@@ -151,6 +151,7 @@ export const MENU: MenuGroup[] = [
     ]
   },
   { labelKey: 'nav_automation', icon: 'Bot', path: '/automation' },
+  { labelKey: 'nav_subscription', icon: 'CreditCard', path: '/subscription' },
   { labelKey: 'nav_branches', icon: 'Building2', path: '/branches' },
   {
     labelKey: 'nav_security', icon: 'ShieldCheck',
