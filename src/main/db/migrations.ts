@@ -535,5 +535,10 @@ export const MIGRATIONS: string[] = [
     ('invoice_seq', '0'),
     ('receipt_seq', '0'),
     ('purchase_seq', '0');
+  `,
+
+  `-- Version 2: package renewal — customer package validity date
+  ALTER TABLE customers ADD COLUMN validity_till TEXT;
+  CREATE INDEX idx_customers_validity ON customers(validity_till);
   `
 ]

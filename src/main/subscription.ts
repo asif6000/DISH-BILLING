@@ -9,6 +9,10 @@ import { ipcMain } from 'electron'
 import { createHash, randomUUID } from 'crypto'
 import { getSetting, setSetting, logActivity } from './db'
 
+// ---- Supabase (baked-in defaults; settings keys supabase_url / supabase_anon_key can override) ----
+const DEFAULT_SUPABASE_URL = 'https://ttmjcjvthrnzyiifdqht.supabase.co'
+const DEFAULT_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR0bWpjanZ0aHJuenlpaWZkcWh0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTUxNTI1MDIsImV4cCI6MjExMDcyODUwMn0.mCWYnB_Sys3hYA8OaZYU3QzAP_ZBM6XW8PHu86a3ps8'
+
 // ---- subscription product info (shown on the payment gate) ----
 export const SUB_PRICE_BDT = 10000
 export const SUB_BKASH = '01331707900'
@@ -101,11 +105,11 @@ export function registerSubscriptionIpc(): void {
 // ============================================================
 
 function sbUrl(): string {
-  return getSetting('supabase_url', '').trim().replace(/\/$/, '')
+  return (getSetting('supabase_url', '') || DEFAULT_SUPABASE_URL).trim().replace(/\/$/, '')
 }
 
 function sbKey(): string {
-  return getSetting('supabase_anon_key', '').trim()
+  return (getSetting('supabase_anon_key', '') || DEFAULT_SUPABASE_ANON_KEY).trim()
 }
 
 export function supabaseConfigured(): boolean {

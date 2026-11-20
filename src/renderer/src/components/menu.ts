@@ -55,6 +55,7 @@ export const MENU: MenuGroup[] = [
     labelKey: 'nav_payments', icon: 'Wallet',
     children: [
       { labelKey: 'payments_collect', path: '/payments/collect' },
+      { labelKey: 'payments_renewal', path: '/payments/renewal' },
       { labelKey: 'payments_history', path: '/payments' },
       { labelKey: 'payments_cash', path: '/payments?method=cash' },
       { labelKey: 'payments_advance', path: '/payments?type=advance' },

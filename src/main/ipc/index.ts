@@ -16,6 +16,7 @@ import { registerInventoryIpc } from './inventory'
 import { registerMiscIpc } from './misc'
 import { registerUpdaterIpc } from '../updater'
 import { registerSubscriptionIpc } from '../subscription'
+import { registerRenewalIpc } from './renewal'
 
 export * from './auth'
 
@@ -33,4 +34,5 @@ export function registerAllIpc(): void {
   registerMiscIpc()
   registerUpdaterIpc()
   registerSubscriptionIpc()
+  registerRenewalIpc()
 }

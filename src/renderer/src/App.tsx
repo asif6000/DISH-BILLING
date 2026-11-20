@@ -30,6 +30,7 @@ import { TransfersPage, TransactionPages } from './pages/TransactionPages'
 import { MessagesPages } from './pages/MessagesPages'
 import { CollectorAssign } from './pages/CollectorAssign'
 import { DailyPaymentsPage } from './pages/DailyPayments'
+import { RenewalsPage } from './pages/Renewals'
 import { ImportExportPage } from './pages/ImportExport'
 
 function AppInner() {
@@ -108,6 +109,7 @@ function AppInner() {
 
           {/* Payments */}
           <Route path="/payments/collect" element={<CollectPayment />} />
+          <Route path="/payments/renewal" element={<RenewalsPage />} />
           <Route path="/payments" element={<PaymentsHistory />} />
           <Route path="/payments/daily" element={<DailyPaymentsPage />} />
           <Route path="/payments/refund" element={<CollectPayment mode="refund" />} />
