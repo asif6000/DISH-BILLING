@@ -23,6 +23,19 @@ export default function SubscriptionRenewalPage() {
   const load = () => window.api.subscription.status().then(setS).catch(() => {})
   useEffect(() => { load() }, [])
 
+  // live countdown (updates every second)
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(id)
+  }, [])
+
+  // check Supabase every 60s so an approved payment activates even without sending from here
+  useEffect(() => {
+    const id = window.setInterval(() => { window.api.subscription.checkRemote().then((st: any) => setS(st)).catch(() => {}) }, 60_000)
+    return () => window.clearInterval(id)
+  }, [])
+
   // after sending a renewal request: poll Supabase every 60s until approved
   useEffect(() => {
     if (!sent) return
@@ -47,7 +60,7 @@ export default function SubscriptionRenewalPage() {
       setTrxId('')
     } catch (e) {
       const m = errMsg(e)
-      setSendErr(m.includes('SUPABASE_NOT_CONFIGURED') || m.includes('SUPABASE_') || m.includes('fetch')
+      setSendErr(m.includes('SUPABASE_NOT_CONFIGURED') || m.includes('Failed to fetch') || m.includes('net::')
         ? t('subOffline') : m)
     } finally { setBusy(false) }
   }
@@ -67,6 +80,14 @@ export default function SubscriptionRenewalPage() {
   }
 
   if (!s) return <div className="text-slate-400">{t('loading')}</div>
+
+  const msLeft = s.expire ? new Date(s.expire + 'T23:59:59').getTime() - now : 0
+  const cd = msLeft > 0 ? {
+    d: Math.floor(msLeft / 86_400_000),
+    h: Math.floor((msLeft % 86_400_000) / 3_600_000),
+    m: Math.floor((msLeft % 3_600_000) / 60_000),
+    s: Math.floor((msLeft % 60_000) / 1000)
+  } : null
   const badgeCls = s.state === 'expiring' ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
     : s.state === 'expired' ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
     : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
@@ -104,6 +125,18 @@ export default function SubscriptionRenewalPage() {
           <p className="text-amber-600 dark:text-amber-400 text-xs mt-2 flex items-center gap-1.5">
             <AlertTriangle size={13} /> {t('subExpiring')} {t('subRenewNow')}!
           </p>
+        )}
+        {cd && (
+          <div className="mt-3 rounded-xl bg-slate-900 dark:bg-slate-900/80 text-white px-4 py-3 flex flex-wrap items-center justify-center gap-2 font-mono text-lg">
+            <span className="text-[11px] font-sans text-slate-400 mr-1">{t('subTimeLeft')}</span>
+            <span><b className="text-brand-400 text-2xl">{String(cd.d).padStart(2, '0')}</b> <span className="text-[11px] text-slate-400">{t('uDays')}</span></span>
+            <span className="text-slate-600">:</span>
+            <span><b className="text-brand-400 text-2xl">{String(cd.h).padStart(2, '0')}</b> <span className="text-[11px] text-slate-400">{t('uHours')}</span></span>
+            <span className="text-slate-600">:</span>
+            <span><b className="text-brand-400 text-2xl">{String(cd.m).padStart(2, '0')}</b> <span className="text-[11px] text-slate-400">{t('uMin')}</span></span>
+            <span className="text-slate-600">:</span>
+            <span><b className="text-emerald-400 text-2xl">{String(cd.s).padStart(2, '0')}</b> <span className="text-[11px] text-slate-400">{t('uSec')}</span></span>
+          </div>
         )}
       </div>
 

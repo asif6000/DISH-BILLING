@@ -136,7 +136,15 @@ async function sbFetch(path: string, init: RequestInit = {}): Promise<Response> 
       ...(init.headers || {})
     }
   })
-  if (!res.ok) throw new Error('SUPABASE_' + res.status)
+  if (!res.ok) {
+    // surface the real reason (e.g. missing column, auth issue) instead of a generic error
+    let detail = 'HTTP ' + res.status
+    try {
+      const j: any = await res.json()
+      if (j?.message) detail = j.message
+    } catch { /* keep HTTP code */ }
+    throw new Error('SUPABASE_ERROR: ' + detail)
+  }
   return res
 }
 

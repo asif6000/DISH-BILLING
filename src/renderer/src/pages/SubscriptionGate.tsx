@@ -68,7 +68,7 @@ export default function SubscriptionGate({ onActivated }: { onActivated: () => v
       const m = errMsg(e)
       setSendErr(m.includes('SUPABASE_NOT_CONFIGURED')
         ? (t('subOffline') + ' — ' + t('subOr') + ': ' + t('subCode'))
-        : m.includes('SUPABASE_') || m.includes('fetch') ? t('subOffline') : m)
+        : m.includes('Failed to fetch') || m.includes('net::') ? t('subOffline') : m)
     } finally { setBusy(false) }
   }
 
