@@ -180,3 +180,29 @@ Everything — customers, billing, payments, reports, accounts, inventory, print
 | Printed receipt shows wrong printer | Select the printer in the Windows print dialog each time, or set a default printer in Windows. |
 | App window too small | Resize normally; minimum width 1100px. Use `Ctrl + -/+` to zoom. |
 | Need to move data to a new PC | Backup → install app → Restore. |
+| Subscription expired / activation code not working | See **Section 10 — Subscription** below. |
+
+---
+
+## 10. Subscription
+
+The app uses a **yearly subscription of ৳10,000 (ten thousand taka)**. The first install starts with a **30-day trial**. The current expiry date is shown in *Settings → Subscription*, and a warning banner appears in the header during the last 7 days.
+
+### When the subscription expires
+
+The app locks and shows a full-screen payment page with these payment numbers:
+
+- **bKash:** 01331707900
+- **Nagad:** 01616595386
+
+### Activation — Option A: Online approval via Supabase (recommended)
+
+Once Supabase is configured (see `supabase-setup.sql` and *Settings → Supabase*), the customer pays, then submits **company name, mobile, method and TrxID** on the payment page. The request appears as **pending** in the developer's **admin panel** (`admin-panel.html` — open in any browser, first run creates the admin login). After the developer clicks **Approve**, the customer's app checks Supabase (on startup, every 30 minutes, and the payment page polls every 60 seconds) and **activates automatically** until `expires_at` (+1 year from approval).
+
+### Activation — Option B: Offline activation code (backup, works without internet)
+
+1. Send **৳10,000** via bKash or Nagad to one of the numbers above.
+2. Contact support and receive an **8-character activation code** (generated with `node scripts/gen-sub-code.js [YYYY-MM]`).
+3. Enter the code on the payment page (or in *Settings → Subscription*) and click **Activate**.
+4. The subscription extends by **1 full year** from the current expiry (renewing early never loses days).
+

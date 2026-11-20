@@ -16,8 +16,13 @@ export default function Layout({ user, onLogout }: { user: UserInfo | null; onLo
   const [open, setOpen] = useState<Record<string, boolean>>({})
   const [dark, setDark] = useState(() => localStorage.getItem('ava_theme') === 'dark')
   const [pending, setPending] = useState(0)
+  const [sub, setSub] = useState<any>(null)
   const location = useLocation()
   const navigate = useNavigate()
+
+  useEffect(() => {
+    window.api.subscription.status().then((s: any) => setSub(s)).catch(() => {})
+  }, [])
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
@@ -126,6 +131,16 @@ export default function Layout({ user, onLogout }: { user: UserInfo | null; onLo
           </div>
         </header>
         <main className="flex-1 overflow-y-auto p-5">
+          {sub && sub.state !== 'active' && (
+            <div className="mb-4 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 px-4 py-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-amber-800 dark:text-amber-300">
+              <Icons.AlertTriangle size={16} className="shrink-0" />
+              <span className="font-semibold">{t('subExpiring')}</span>
+              <span>
+                {t('subDaysLeft')}: <b>{sub.daysLeft}</b> · {t('subFee')}: <b>৳10,000</b>
+              </span>
+              <span className="text-xs">bKash 01331707900 · Nagad 01616595386</span>
+            </div>
+          )}
           <Outlet />
         </main>
         <footer className="h-8 shrink-0 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between px-4 text-[11px] text-slate-400">

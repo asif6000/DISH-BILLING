@@ -1,6 +1,7 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import bcrypt from 'bcryptjs'
 import { getDb, logActivity, getSetting } from '../db'
+import { isSubscriptionExpired } from '../subscription'
 
 export interface Session {
   userId: number
@@ -30,6 +31,7 @@ export function getSession(e: Electron.IpcMainInvokeEvent): Session | null {
 }
 
 export function requireAuth(e: Electron.IpcMainInvokeEvent): Session {
+  if (isSubscriptionExpired()) throw new Error('SUBSCRIPTION_EXPIRED')
   const s = sessions.get(e.sender.id)
   if (!s) throw new Error('SESSION_EXPIRED')
   const timeout = (parseInt(getSetting('session_timeout_min', String(SESSION_DEFAULT_MIN)), 10) || SESSION_DEFAULT_MIN) * 60_000

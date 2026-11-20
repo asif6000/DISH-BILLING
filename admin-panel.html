@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AVA Subscription Admin</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 24px 16px 60px; }
+  h1 { font-size: 20px; display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+  .muted { color: #94a3b8; font-size: 13px; }
+  .card { background: #1e293b; border: 1px solid #334155; border-radius: 14px; padding: 20px; margin-top: 16px; }
+  label { display: block; font-size: 12px; color: #94a3b8; margin: 10px 0 4px; }
+  input, select { width: 100%; padding: 9px 12px; border-radius: 8px; border: 1px solid #475569; background: #0f172a; color: #e2e8f0; font-size: 14px; }
+  button { padding: 9px 16px; border-radius: 8px; border: none; cursor: pointer; font-size: 14px; font-weight: 600; }
+  .btn-primary { background: #4f46e5; color: #fff; }
+  .btn-primary:hover { background: #6366f1; }
+  .btn-ok { background: #059669; color: #fff; }
+  .btn-no { background: #7f1d1d; color: #fff; }
+  .btn-ghost { background: #334155; color: #cbd5e1; }
+  .row-btns { display: flex; gap: 6px; }
+  .row-btns button { padding: 6px 12px; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: #94a3b8; font-weight: 600; padding: 8px 10px; border-bottom: 1px solid #334155; }
+  td { padding: 10px; border-bottom: 1px solid #1e293b; vertical-align: top; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .b-pending { background: #78350f; color: #fbbf24; }
+  .b-approved { background: #064e3b; color: #6ee7b7; }
+  .b-rejected { background: #450a0a; color: #fca5a5; }
+  .err { color: #f87171; font-size: 13px; margin-top: 10px; }
+  .ok-msg { color: #34d399; font-size: 13px; margin-top: 10px; }
+  .top { display: flex; justify-content: space-between; align-items: center; margin-top: 24px; }
+  .mono { font-family: Consolas, monospace; }
+  .filters { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  .filters button.active { background: #4f46e5; color: #fff; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>📺 AVA Subscription — Admin Approval</h1>
+  <div class="muted">Yearly ৳10,000 · bKash 01331707900 · Nagad 01616595386</div>
+  <div id="app"></div>
+</div>
+
+<script type="module">
+// Supabase JS from CDN (works offline-file too, needs internet when used)
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+
+const $app = document.getElementById('app')
+const LS_URL = 'ava_sb_url', LS_KEY = 'ava_sb_key'
+let sb = null, admin = null, filter = 'pending'
+
+const h = (html) => { const d = document.createElement('div'); d.innerHTML = html; return d.firstElementChild }
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
+const sha256hex = async (text) => {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+// ---------- screens ----------
+function renderSetup(msg) {
+  const savedUrl = localStorage.getItem(LS_URL) || ''
+  $app.replaceChildren(h(`
+    <div class="card">
+      <h2 style="font-size:16px">Supabase Connect</h2>
+      <p class="muted" style="margin-top:6px">Project Settings → API থেকে <b>URL</b> ও <b>service_role key</b> নিন। (এই প্যানেল শুধু আপনি ব্যবহার করবেন — service key অন্যকে দেবেন না।)</p>
+      <label>Project URL</label>
+      <input id="su" placeholder="https://xxxx.supabase.co" value="${esc(savedUrl)}">
+      <label>service_role Key (secret)</label>
+      <input id="sk" type="password" placeholder="eyJhbGciOi...">
+      <div style="margin-top:14px"><button class="btn-primary" id="conn">Connect</button></div>
+      ${msg ? `<div class="err">${esc(msg)}</div>` : ''}
+    </div>`))
+  $app.querySelector('#conn').onclick = async () => {
+    const url = $app.querySelector('#su').value.trim().replace(/\/$/, '')
+    const key = $app.querySelector('#sk').value.trim()
+    if (!url || !key) return
+    try {
+      const test = await fetch(url + '/rest/v1/sub_admins?select=id&limit=1', {
+        headers: { apikey: key, Authorization: 'Bearer ' + key }
+      })
+      if (!test.ok) throw new Error('HTTP ' + test.status)
+      localStorage.setItem(LS_URL, url); localStorage.setItem(LS_KEY, key)
+      boot()
+    } catch (e) { renderSetup('Connect ব্যর্থ: ' + e.message + ' — URL/key আর supabase-setup.sql রান করা আছে কিনা চেক করুন।') }
+  }
+}
+
+async function renderCreateAdmin() {
+  $app.replaceChildren(h(`
+    <div class="card">
+      <h2 style="font-size:16px">প্রথমবার — অ্যাডমিন তৈরি করুন</h2>
+      <label>Username</label><input id="au" placeholder="admin">
+      <label>Password (কমপক্ষে ৬ অক্ষর)</label><input id="ap" type="password">
+      <div style="margin-top:14px"><button class="btn-primary" id="mk">Create Admin</button></div>
+      <div id="amsg"></div>
+    </div>`))
+  $app.querySelector('#mk').onclick = async () => {
+    const u = $app.querySelector('#au').value.trim()
+    const p = $app.querySelector('#ap').value
+    if (!u || p.length < 6) { $app.querySelector('#amsg').innerHTML = '<div class="err">Username ও ৬+ অক্ষরের password দিন</div>'; return }
+    const hash = await sha256hex('ava-sub|' + p)
+    const { error } = await sb.from('sub_admins').insert({ username: u, password_hash: hash })
+    if (error) { $app.querySelector('#amsg').innerHTML = '<div class="err">' + esc(error.message) + '</div>'; return }
+    admin = u; renderPanel()
+  }
+}
+
+function renderLogin(msg) {
+  $app.replaceChildren(h(`
+    <div class="card">
+      <h2 style="font-size:16px">অ্যাডমিন লগইন</h2>
+      <label>Username</label><input id="lu">
+      <label>Password</label><input id="lp" type="password">
+      <div style="margin-top:14px"><button class="btn-primary" id="lg">Login</button></div>
+      ${msg ? `<div class="err">${esc(msg)}</div>` : ''}
+      <div style="margin-top:10px"><button class="btn-ghost" id="out" style="font-size:12px">Disconnect (ভুল URL/key)</button></div>
+    </div>`))
+  $app.querySelector('#lg').onclick = async () => {
+    const u = $app.querySelector('#lu').value.trim()
+    const p = $app.querySelector('#lp').value
+    const hash = await sha256hex('ava-sub|' + p)
+    const { data, error } = await sb.from('sub_admins').select('username,password_hash').eq('username', u).limit(1)
+    if (error) return renderLogin('Login ব্যর্থ: ' + error.message)
+    if (!data.length || data[0].password_hash !== hash) return renderLogin('ভুল username বা password')
+    admin = u; renderPanel()
+  }
+  $app.querySelector('#out').onclick = () => { localStorage.removeItem(LS_URL); localStorage.removeItem(LS_KEY); renderSetup() }
+}
+
+async function renderPanel() {
+  const { data: rows, error } = await sb.from('sub_requests').select('*').order('created_at', { ascending: false }).limit(200)
+  if (error) { $app.replaceChildren(h(`<div class="card err">Load ব্যর্থ: ${esc(error.message)}</div>`)); return }
+
+  const counts = { pending: 0, approved: 0, rejected: 0, all: rows.length }
+  rows.forEach(r => { if (counts[r.status] !== undefined) counts[r.status]++ })
+  const shown = rows.filter(r => filter === 'all' ? true : r.status === filter)
+
+  const tbl = h(`<div>
+    <div class="top">
+      <div class="muted">লগইন: <b>${esc(admin)}</b></div>
+      <button class="btn-ghost" id="lo">Logout</button>
+    </div>
+    <div class="filters">
+      ${['pending','approved','rejected','all'].map(f =>
+        `<button data-f="${f}" class="${f === filter ? 'active' : ''}">${f} (${counts[f]})</button>`).join('')}
+      <button id="rl">↻ Refresh</button>
+    </div>
+    <div class="card" style="padding:0; overflow-x:auto">
+      <table><thead><tr>
+        <th>তারিখ</th><th>কোম্পানি / মোবাইল</th><th>মাধ্যম</th><th>TrxID</th><th>App ID</th><th>স্ট্যাটাস</th><th>অ্যাকশন</th>
+      </tr></thead><tbody id="tb">
+        ${shown.length ? shown.map(r => `<tr>
+          <td class="mono">${esc((r.created_at || '').slice(0, 16).replace('T', ' '))}</td>
+          <td><b>${esc(r.company_name || '—')}</b><br><span class="mono muted">${esc(r.mobile)}</span></td>
+          <td>${esc(r.method)}</td>
+          <td class="mono">${esc(r.trx_id)}</td>
+          <td class="mono muted">${esc((r.app_id || '').slice(0, 8))}…</td>
+          <td><span class="badge b-${esc(r.status)}">${esc(r.status)}${r.status === 'approved' ? ' · ' + esc(r.expires_at) : ''}</span></td>
+          <td class="row-btns">${r.status === 'pending' ? `
+            <button class="btn-ok" data-ok="${r.id}">✓ Approve</button>
+            <button class="btn-no" data-no="${r.id}">✕ Reject</button>` :
+            `<button class="btn-ghost" data-reset="${r.id}">↺ Pending</button>`}
+          </td>
+        </tr>`).join('') : '<tr><td colspan="7" class="muted" style="text-align:center;padding:30px">কোনো রিকোয়েস্ট নেই</td></tr>'}
+      </tbody></table>
+    </div></div>`)
+
+  $app.replaceChildren(tbl)
+  tbl.querySelector('#lo').onclick = () => { admin = null; renderLogin() }
+  tbl.querySelector('#rl').onclick = renderPanel
+  tbl.querySelectorAll('.filters button[data-f]').forEach(b => b.onclick = () => { filter = b.dataset.f; renderPanel() })
+  const plusYear = () => { const d = new Date(); d.setDate(d.getDate() + 365); return d.toISOString().slice(0, 10) }
+  tbl.querySelectorAll('[data-ok]').forEach(b => b.onclick = async () => {
+    await sb.from('sub_requests').update({ status: 'approved', approved_at: new Date().toISOString(), expires_at: plusYear() }).eq('id', b.dataset.ok)
+    renderPanel()
+  })
+  tbl.querySelectorAll('[data-no]').forEach(b => b.onclick = async () => {
+    await sb.from('sub_requests').update({ status: 'rejected' }).eq('id', b.dataset.no)
+    renderPanel()
+  })
+  tbl.querySelectorAll('[data-reset]').forEach(b => b.onclick = async () => {
+    await sb.from('sub_requests').update({ status: 'pending', approved_at: null, expires_at: null }).eq('id', b.dataset.reset)
+    renderPanel()
+  })
+}
+
+// ---------- boot ----------
+async function boot() {
+  const url = localStorage.getItem(LS_URL), key = localStorage.getItem(LS_KEY)
+  if (!url || !key) return renderSetup()
+  sb = createClient(url, key)
+  const { data: admins } = await sb.from('sub_admins').select('id').limit(1)
+  if (!admins || !admins.length) return renderCreateAdmin()
+  return renderLogin()
+}
+boot()
+</script>
+</body>
+</html>
