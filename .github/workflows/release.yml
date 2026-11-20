@@ -24,7 +24,10 @@ jobs:
 
       - run: npm ci
 
-      - name: Build & publish
+      - name: Build renderer + main + preload
+        run: npx electron-vite build
+
+      - name: Package & publish
         run: npx electron-builder --win --publish always
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
