@@ -61,7 +61,7 @@ export default function AutomationPage() {
     <label className="flex items-center justify-between py-3 border-b border-slate-100 dark:border-slate-800 cursor-pointer">
       <span className="text-sm">{label}</span>
       <button onClick={() => save(k, settings[k] === '1' ? '0' : '1')}
-        className={`relative w-10 h-5.5 h-6 rounded-full transition ${settings[k] === '1' ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`}>
+        className={`relative w-10 h-6 rounded-full transition ${settings[k] === '1' ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`}>
         <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all ${settings[k] === '1' ? 'left-[18px]' : 'left-0.5'}`} />
       </button>
     </label>
