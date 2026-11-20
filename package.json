@@ -72,8 +72,7 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "AVA Cable Management",
-      "artifactName": "AVA-Cable-Management-Setup-${version}.exe",
-      "script": "installer.nsi"
+      "artifactName": "AVA-Cable-Management-Setup-${version}.exe"
     },
     "publish": null
   },
