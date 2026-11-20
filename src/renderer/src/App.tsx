@@ -5,6 +5,7 @@ import { ToastProvider, useToast } from './components/ui'
 import Layout from './components/Layout'
 import Login from './pages/Login'
 import SubscriptionGate from './pages/SubscriptionGate'
+import UpdateGate from './pages/UpdateGate'
 import Dashboard from './pages/Dashboard'
 import CustomersPage from './pages/Customers'
 import CustomerProfile from './pages/CustomerProfile'
@@ -37,11 +38,14 @@ function AppInner() {
   const [user, setUser] = useState<UserInfo | null>(null)
   const [checking, setChecking] = useState(true)
   const [sub, setSub] = useState<any>(null)
+  const [upd, setUpd] = useState<any>(null)
 
   const refreshSub = () => window.api.subscription.status().then(setSub).catch(() => {})
 
   useEffect(() => {
     refreshSub()
+    window.api.updater.status().then(setUpd).catch(() => {})
+    const offUpd = window.api.updater.onStatus((s: any) => setUpd(s))
     window.api.auth.check().then((r: any) => setUser(r.user)).finally(() => setChecking(false))
     const off = window.api.auth.onExpired(() => {
       setUser(null)
@@ -51,10 +55,14 @@ function AppInner() {
     const ping = setInterval(() => window.api.auth.ping().catch(() => {}), 120_000)
     // re-check subscription every 30 min (handles expiry while app is open)
     const subPing = setInterval(refreshSub, 30 * 60_000)
-    return () => { off(); clearInterval(ping); clearInterval(subPing) }
+    return () => { off(); offUpd(); clearInterval(ping); clearInterval(subPing) }
   }, [])
 
+  const updPending = upd && ['available', 'downloading', 'downloaded'].includes(upd.state)
+
   if (checking) return <div className="h-full flex items-center justify-center text-slate-400">{t('loading')}</div>
+  // forced update before anything else (login blocked until installed)
+  if (updPending) return <UpdateGate />
   if (sub?.state === 'expired') return <SubscriptionGate onActivated={refreshSub} />
   if (!user) return <Login onLogin={setUser} />
 

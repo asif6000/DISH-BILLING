@@ -1,7 +1,7 @@
 {
   "name": "ava-cable-management",
   "productName": "AVA Cable Management System",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AVA Cable Management System - Offline Cable TV / Dish Line Business ERP",
   "main": "out/main/index.js",
   "author": "AVA Systems",
@@ -48,6 +48,11 @@
   "build": {
     "appId": "com.ava.cablemanagement",
     "productName": "AVA Cable Management",
+    "publish": {
+      "provider": "github",
+      "owner": "asif6000",
+      "repo": "DISH-BILLING"
+    },
     "directories": {
       "output": "release"
     },

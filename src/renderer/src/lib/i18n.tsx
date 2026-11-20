@@ -161,7 +161,17 @@ const bn: Record<string, string> = {
   supabaseTitle: 'Supabase (অনলাইন অ্যাপ্রোভাল)',
   supabaseUrl: 'Project URL',
   supabaseKey: 'Anon Key',
-  supabaseAppId: 'এই ইনস্টলেশনের App ID'
+  supabaseAppId: 'এই ইনস্টলেশনের App ID',
+  // forced update
+  updTitle: 'নতুন আপডেট পাওয়া গেছে!',
+  updMust: 'লগইন করতে হলে আগে আপডেট ইনস্টল করতে হবে।',
+  updChecking: 'আপডেট চেক করা হচ্ছে…',
+  updDownloading: 'ডাউনলোড হচ্ছে…',
+  updInstalling: 'ইনস্টল করা হচ্ছে… অ্যাপ স্বয়ংক্রিয়ভাবে রিস্টার্ট হবে, বন্ধ করবেন না।',
+  updNewVersion: 'নতুন ভার্সন',
+  updRetry: 'আবার চেষ্টা করুন',
+  updError: 'আপডেট ডাউনলোড করা যায়নি — ইন্টারনেট কানেকশন চেক করে আবার চেষ্টা করুন।',
+  updUpToDate: 'আপ-টু-ডেট ✓ লগইন করুন'
 }
 
 const en: Record<string, string> = Object.fromEntries(Object.keys(bn).map(() => [] as [string, string][]).flat())
@@ -317,7 +327,16 @@ Object.assign(en, {
   supabaseTitle: 'Supabase (Online Approval)',
   supabaseUrl: 'Project URL',
   supabaseKey: 'Anon Key',
-  supabaseAppId: 'App ID of this installation'
+  supabaseAppId: 'App ID of this installation',
+  updTitle: 'New Update Available!',
+  updMust: 'You must install the update before you can log in.',
+  updChecking: 'Checking for updates…',
+  updDownloading: 'Downloading…',
+  updInstalling: 'Installing… the app will restart automatically, please do not close it.',
+  updNewVersion: 'New version',
+  updRetry: 'Try again',
+  updError: 'Could not download the update — check your internet connection and try again.',
+  updUpToDate: 'Up to date ✓ you can log in'
 })
 
 const dicts: Record<Lang, Record<string, string>> = { bn, en }

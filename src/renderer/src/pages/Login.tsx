@@ -20,7 +20,8 @@ export default function Login({ onLogin }: { onLogin: (u: UserInfo) => void }) {
       onLogin(r.user)
     } catch (err) {
       const m = errMsg(err)
-      setError(m.includes('INVALID_CREDENTIALS') ? t('loginError') : m)
+      setError(m.includes('INVALID_CREDENTIALS') ? t('loginError')
+        : m.includes('UPDATE_REQUIRED') ? t('updMust') : m)
     } finally {
       setBusy(false)
     }

@@ -1,23 +1,33 @@
 // Auto-update system (optional, needs internet only when checking/downloading).
-// Feed URL is configurable in Settings → Auto Update. Offline → silently skipped.
+// Default feed: GitHub Releases (asif6000/DISH-BILLING). A custom generic URL in
+// Settings → Auto Update overrides it. Offline → silently skipped.
+// Force-update rule: while an update is found but not yet installed, login is
+// blocked (main process throws UPDATE_REQUIRED and the renderer shows UpdateGate).
 import { BrowserWindow, ipcMain, dialog, app } from 'electron'
 import { getSetting, setSetting, logActivity } from './db'
 import { requireAuth } from './ipc/auth'
+import { updateStatus, isUpdatePending, UpdateStatus } from './updateState'
+
+export const GITHUB_OWNER = 'asif6000'
+export const GITHUB_REPO = 'DISH-BILLING'
 
 let autoUpdater: any = null
-let currentStatus = { state: 'idle', info: null as any, percent: 0 }
 
 function broadcast(win: BrowserWindow | null) {
   if (win && !win.isDestroyed()) {
-    win.webContents.send('updater:status', currentStatus)
+    win.webContents.send('updater:status', updateStatus)
   }
 }
 
 function setStatus(state: string, info?: any, percent = 0) {
-  currentStatus = { state, info: info || currentStatus.info, percent }
+  updateStatus.state = state
+  updateStatus.info = info || updateStatus.info
+  updateStatus.percent = percent
   const wins = BrowserWindow.getAllWindows()
   for (const w of wins) broadcast(w)
 }
+
+export { isUpdatePending }
 
 export function initAutoUpdater(mainWindow: BrowserWindow): void {
   let updater: any
@@ -28,7 +38,7 @@ export function initAutoUpdater(mainWindow: BrowserWindow): void {
     return
   }
   autoUpdater = updater
-  updater.autoDownload = false // user confirms download (keeps control, offline-friendly)
+  updater.autoDownload = false // download is triggered by the UpdateGate (forced) or by the user
 
   updater.on('checking-for-update', () => setStatus('checking'))
   updater.on('update-available', (info: any) => setStatus('available', info))
@@ -54,31 +64,27 @@ export function initAutoUpdater(mainWindow: BrowserWindow): void {
     }
   })
 
-  // check on startup if enabled and configured
-  const url = getSetting('update_url', '')
-  if (getSetting('auto_update_check', '1') === '1' && url) {
-    setTimeout(() => checkForUpdates(false), 8000)
+  // check on startup (GitHub by default) — offline fails silently
+  if (getSetting('auto_update_check', '1') === '1') {
+    setTimeout(() => checkForUpdates(false).catch(() => {}), 8000)
   }
 }
 
-async function configureFeed(url: string): Promise<void> {
-  if (!autoUpdater) throw new Error('UPDATER_UNAVAILABLE')
-  if (url) {
-    autoUpdater.setFeedURL({ provider: 'generic', url: url.replace(/\/$/, '') + '/' })
-  }
+function feed(): { provider: string; url?: string; owner?: string; repo?: string } {
+  const url = getSetting('update_url', '').trim()
+  if (url) return { provider: 'generic', url: url.replace(/\/$/, '') + '/' }
+  return { provider: 'github', owner: GITHUB_OWNER, repo: GITHUB_REPO }
 }
 
-async function checkForUpdates(manual: boolean): Promise<{ state: string; info?: any }> {
-  if (!autoUpdater) return { state: 'unavailable' }
-  const url = getSetting('update_url', '')
-  if (!url) {
-    if (manual) throw new Error('UPDATE_URL_NOT_SET')
-    return { state: 'not-configured' }
+export async function checkForUpdates(manual: boolean): Promise<{ state: string; info?: any }> {
+  if (!autoUpdater) {
+    if (manual) throw new Error('UPDATER_UNAVAILABLE')
+    return { state: 'unavailable' }
   }
-  await configureFeed(url)
+  autoUpdater.setFeedURL(feed())
   try {
     await autoUpdater.checkForUpdates()
-    return { state: currentStatus.state, info: currentStatus.info }
+    return { state: updateStatus.state, info: updateStatus.info }
   } catch (e: any) {
     setStatus('error', { message: String(e?.message || e).slice(0, 300) })
     throw e
@@ -86,37 +92,30 @@ async function checkForUpdates(manual: boolean): Promise<{ state: string; info?:
 }
 
 export function registerUpdaterIpc(): void {
-  ipcMain.handle('updater:check', async (e) => {
-    requireAuth(e)
-    const r = await checkForUpdates(true)
-    return r
-  })
+  // status / download / install / manual check are allowed before login:
+  // the forced-update gate runs on the login screen.
+  ipcMain.handle('updater:check', async () => checkForUpdates(true))
 
-  ipcMain.handle('updater:download', async (e) => {
-    requireAuth(e)
+  ipcMain.handle('updater:download', () => {
     if (!autoUpdater) throw new Error('UPDATER_UNAVAILABLE')
     autoUpdater.downloadUpdate()
     return true
   })
 
-  ipcMain.handle('updater:install', (e) => {
-    requireAuth(e)
+  ipcMain.handle('updater:install', () => {
     if (!autoUpdater) throw new Error('UPDATER_UNAVAILABLE')
+    logActivity(null, null, 'update_install', 'settings', '')
     autoUpdater.quitAndInstall(false, true)
     return true
   })
 
-  ipcMain.handle('updater:status', (e) => {
-    requireAuth(e)
-    return currentStatus
-  })
+  ipcMain.handle('updater:status', (): UpdateStatus => updateStatus)
 
   ipcMain.handle('updater:configure', (e, url: string, autoCheck: boolean) => {
     const s = requireAuth(e)
     setSetting('update_url', String(url || '').trim())
     setSetting('auto_update_check', autoCheck ? '1' : '0')
     logActivity(s.userId, s.username, 'configure_updater', 'settings', url)
-    if (url) configureFeed(String(url).trim())
     return true
   })
 

@@ -2,6 +2,7 @@ import { ipcMain, BrowserWindow } from 'electron'
 import bcrypt from 'bcryptjs'
 import { getDb, logActivity, getSetting } from '../db'
 import { isSubscriptionExpired } from '../subscription'
+import { isUpdatePending } from '../updateState'
 
 export interface Session {
   userId: number
@@ -55,6 +56,8 @@ export function registerAuthIpc(): void {
   ensureDefaultAdmin()
 
   ipcMain.handle('auth:login', async (e, username: string, password: string) => {
+    // forced update: an update was found but is not installed yet → no login
+    if (isUpdatePending()) throw new Error('UPDATE_REQUIRED')
     const db = getDb()
     const user = db.prepare('SELECT * FROM users WHERE username = ? AND status = \'active\'').get(username) as any
     if (!user || !bcrypt.compareSync(password, user.password_hash)) {
