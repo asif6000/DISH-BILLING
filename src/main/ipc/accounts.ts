@@ -22,13 +22,15 @@ function nowIso(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
-// Post a user to Supabase (insert, ignore if username already exists). No password hash is sent.
+// Post a user to Supabase (insert; if the username already exists the 409 is
+// silently ignored). NOTE: do NOT use on_conflict/ignore-duplicates here — the
+// combination with the RLS insert policy fails (42501). No password hash is sent.
 async function supabaseUpsertUser(u: { username: string; full_name: string | null; mobile: string | null; status: string }): Promise<void> {
   if (!supabaseConfigured()) return
   try {
-    await sbAnonFetch('/rest/v1/app_users?on_conflict=username', {
+    await sbAnonFetch('/rest/v1/app_users', {
       method: 'POST',
-      headers: { Prefer: 'resolution=ignore-duplicates,return=minimal' },
+      headers: { Prefer: 'return=minimal' },
       body: JSON.stringify({
         username: u.username,
         full_name: u.full_name,
@@ -36,7 +38,7 @@ async function supabaseUpsertUser(u: { username: string; full_name: string | nul
         status: u.status === 'active' ? 'approved' : 'pending'
       })
     })
-  } catch { /* offline / already exists — non-fatal */ }
+  } catch { /* offline / already exists (409) — non-fatal */ }
 }
 
 async function requestPasswordReset(username: string): Promise<void> {
