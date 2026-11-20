@@ -149,7 +149,8 @@ export async function sendPaymentRequest(d: { mobile: string; method: string; tr
       method: d.method === 'nagad' ? 'nagad' : 'bkash',
       trx_id: String(d.trxId),
       amount: SUB_PRICE_BDT,
-      status: 'pending'
+      status: 'pending',
+      current_expiry: getSubState().expire
     })
   })
   logActivity(null, null, 'subscription_request_sent', 'settings', 'trx: ' + d.trxId)

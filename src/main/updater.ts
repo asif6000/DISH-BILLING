@@ -38,7 +38,7 @@ export function initAutoUpdater(mainWindow: BrowserWindow): void {
     return
   }
   autoUpdater = updater
-  updater.autoDownload = false // download is triggered by the UpdateGate (forced) or by the user
+  updater.autoDownload = true // internet available + update found → downloads automatically
 
   updater.on('checking-for-update', () => setStatus('checking'))
   updater.on('update-available', (info: any) => setStatus('available', info))
@@ -50,23 +50,28 @@ export function initAutoUpdater(mainWindow: BrowserWindow): void {
   updater.on('download-progress', (p: any) => setStatus('downloading', null, Math.round(p.percent)))
   updater.on('update-downloaded', (info: any) => {
     setStatus('downloaded', info)
+    // auto-install: brief warning (save your work), then restart — no click needed.
+    // (pre-login the UpdateGate installs even sooner, ~2.5s)
     if (dialog) {
       dialog.showMessageBox(mainWindow, {
         type: 'info',
-        title: 'Update Ready',
-        message: 'নতুন ভার্সন ডাউনলোড হয়েছে। ইনস্টল করতে চান?\n\nNew version downloaded. Install now?',
-        buttons: ['এখনই ইনস্টল / Install Now', 'পরে / Later'],
-        defaultId: 0,
-        cancelId: 1
+        title: 'Update',
+        message: 'আপডেট ইনস্টল হচ্ছে… কাজ সেভ করুন! ১০ সেকেন্ডের মধ্যে অ্যাপ নিজে নিজে রিস্টার্ট হবে।\n\nInstalling update… please save your work! The app restarts automatically in 10 seconds.',
+        buttons: ['এখনই / Now'],
+        defaultId: 0
       }).then((r: any) => {
         if (r.response === 0) updater.quitAndInstall(false, true)
-      })
+      }).catch(() => {})
     }
+    setTimeout(() => {
+      try { updater.quitAndInstall(false, true) } catch { /* already restarting */ }
+    }, 10_000)
   })
 
-  // check on startup (GitHub by default) — offline fails silently
+  // check on startup AND every hour — internet থাকলেই আপডেট নিজে নিজে নামবে ও ইনস্টল হবে
   if (getSetting('auto_update_check', '1') === '1') {
     setTimeout(() => checkForUpdates(false).catch(() => {}), 8000)
+    setInterval(() => checkForUpdates(false).catch(() => {}), 60 * 60 * 1000)
   }
 }
 

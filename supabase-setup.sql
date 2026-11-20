@@ -13,6 +13,7 @@ create table if not exists sub_requests (
   trx_id text not null,
   amount numeric not null default 10000,
   status text not null default 'pending',-- pending | approved | rejected
+  current_expiry date,                   -- customer's expiry at request time (for renewals)
   created_at timestamptz not null default now(),
   approved_at timestamptz,
   expires_at date
@@ -28,6 +29,9 @@ create table if not exists sub_admins (
 
 alter table sub_requests enable row level security;
 alter table sub_admins enable row level security;
+
+-- Migration for tables created before this column existed (safe to re-run):
+alter table sub_requests add column if not exists current_expiry date;
 
 -- Customers' apps (anon key) may SEND requests, but cannot read the table.
 drop policy if exists "anon can send payment requests" on sub_requests;

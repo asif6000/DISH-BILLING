@@ -18,11 +18,8 @@ export default function UpdateGate() {
     return () => { off() }
   }, [])
 
-  // auto-download when an update is found; auto-install when downloaded
+  // auto-install when downloaded (download starts automatically via autoDownload)
   useEffect(() => {
-    if (s.state === 'available') {
-      window.api.updater.download().catch(() => {})
-    }
     if (s.state === 'downloaded') {
       const timer = window.setTimeout(() => window.api.updater.install().catch(() => {}), 2500)
       return () => window.clearTimeout(timer)

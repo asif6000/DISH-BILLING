@@ -91,20 +91,25 @@ function renderSetup(msg) {
 async function renderCreateAdmin() {
   $app.replaceChildren(h(`
     <div class="card">
-      <h2 style="font-size:16px">প্রথমবার — অ্যাডমিন তৈরি করুন</h2>
-      <label>Username</label><input id="au" placeholder="admin">
-      <label>Password (কমপক্ষে ৬ অক্ষর)</label><input id="ap" type="password">
-      <div style="margin-top:14px"><button class="btn-primary" id="mk">Create Admin</button></div>
+      <h2 style="font-size:16px">অ্যাডমিন অ্যাকাউন্ট নেই — Supabase থেকে তৈরি করুন</h2>
+      <p class="muted" style="margin-top:6px">নিচে username ও password দিন — একটা SQL তৈরি হবে। সেটা কপি করে <b>Supabase Dashboard → SQL Editor</b>-এ রান করে দিন। এরপর লগইন করতে পারবেন।</p>
+      <label>Admin Username</label><input id="au" placeholder="admin">
+      <label>Admin Password</label><input id="ap" type="password">
+      <div style="margin-top:14px"><button class="btn-primary" id="gen">SQL তৈরি করুন</button></div>
       <div id="amsg"></div>
     </div>`))
-  $app.querySelector('#mk').onclick = async () => {
+  $app.querySelector('#gen').onclick = async () => {
     const u = $app.querySelector('#au').value.trim()
     const p = $app.querySelector('#ap').value
     if (!u || p.length < 6) { $app.querySelector('#amsg').innerHTML = '<div class="err">Username ও ৬+ অক্ষরের password দিন</div>'; return }
     const hash = await sha256hex('ava-sub|' + p)
-    const { error } = await sb.from('sub_admins').insert({ username: u, password_hash: hash })
-    if (error) { $app.querySelector('#amsg').innerHTML = '<div class="err">' + esc(error.message) + '</div>'; return }
-    admin = u; renderPanel()
+    $app.querySelector('#amsg').innerHTML = `
+      <p class="muted" style="margin-top:10px">নিচের SQL টা কপি করে Supabase SQL Editor-এ Run করুন:</p>
+      <pre class="mono" style="background:#0f172a;border:1px solid #334155;border-radius:8px;padding:12px;margin-top:8px;white-space:pre-wrap;word-break:break-all;font-size:12px">insert into sub_admins (username, password_hash) values ('${esc(u)}', '${hash}');</pre>
+      <button class="btn-ghost" id="cp" style="margin-top:10px;font-size:12px">📋 SQL কপি করুন</button>
+      <div style="margin-top:10px"><button class="btn-primary" id="chk">✓ তৈরি হয়েছে — লগইন করুন</button></div>`
+    $app.querySelector('#cp').onclick = () => navigator.clipboard?.writeText(`insert into sub_admins (username, password_hash) values ('${u}', '${hash}');`)
+    $app.querySelector('#chk').onclick = boot
   }
 }
 
@@ -150,13 +155,14 @@ async function renderPanel() {
     </div>
     <div class="card" style="padding:0; overflow-x:auto">
       <table><thead><tr>
-        <th>তারিখ</th><th>কোম্পানি / মোবাইল</th><th>মাধ্যম</th><th>TrxID</th><th>App ID</th><th>স্ট্যাটাস</th><th>অ্যাকশন</th>
+        <th>তারিখ</th><th>কোম্পানি / মোবাইল</th><th>মাধ্যম</th><th>TrxID</th><th>মেয়াদ</th><th>App ID</th><th>স্ট্যাটাস</th><th>অ্যাকশন</th>
       </tr></thead><tbody id="tb">
         ${shown.length ? shown.map(r => `<tr>
           <td class="mono">${esc((r.created_at || '').slice(0, 16).replace('T', ' '))}</td>
           <td><b>${esc(r.company_name || '—')}</b><br><span class="mono muted">${esc(r.mobile)}</span></td>
           <td>${esc(r.method)}</td>
           <td class="mono">${esc(r.trx_id)}</td>
+          <td class="mono muted">${esc(r.current_expiry || 'নতুন')}</td>
           <td class="mono muted">${esc((r.app_id || '').slice(0, 8))}…</td>
           <td><span class="badge b-${esc(r.status)}">${esc(r.status)}${r.status === 'approved' ? ' · ' + esc(r.expires_at) : ''}</span></td>
           <td class="row-btns">${r.status === 'pending' ? `
@@ -164,7 +170,7 @@ async function renderPanel() {
             <button class="btn-no" data-no="${r.id}">✕ Reject</button>` :
             `<button class="btn-ghost" data-reset="${r.id}">↺ Pending</button>`}
           </td>
-        </tr>`).join('') : '<tr><td colspan="7" class="muted" style="text-align:center;padding:30px">কোনো রিকোয়েস্ট নেই</td></tr>'}
+        </tr>`).join('') : '<tr><td colspan="8" class="muted" style="text-align:center;padding:30px">কোনো রিকোয়েস্ট নেই</td></tr>'}
       </tbody></table>
     </div></div>`)
 

@@ -197,7 +197,11 @@ The app locks and shows a full-screen payment page with these payment numbers:
 
 ### Activation — Option A: Online approval via Supabase (recommended)
 
-Once Supabase is configured (see `supabase-setup.sql` and *Settings → Supabase*), the customer pays, then submits **company name, mobile, method and TrxID** on the payment page. The request appears as **pending** in the developer's **admin panel** (`admin-panel.html` — open in any browser, first run creates the admin login). After the developer clicks **Approve**, the customer's app checks Supabase (on startup, every 30 minutes, and the payment page polls every 60 seconds) and **activates automatically** until `expires_at` (+1 year from approval).
+Once Supabase is configured (see `supabase-setup.sql` and *Settings → Supabase*), the customer pays, then submits **company name, mobile, method and TrxID** on the payment page. Each installation gets a unique **App ID automatically** (used to identify the customer in the admin panel). The request appears as **pending** in the developer's **admin panel** (`admin-panel.html`).
+
+**Admin account:** the developer creates it from **Supabase → SQL Editor** (open `admin-panel.html` — when no admin exists it shows the exact `INSERT` SQL to generate for your chosen username/password). Then log in to the panel.
+
+After the developer clicks **Approve**, the customer's app checks Supabase (on startup, every 30 minutes, and the payment page polls every 60 seconds) and **activates automatically** until `expires_at` (+1 year from approval).
 
 ### Activation — Option B: Offline activation code (backup, works without internet)
 
