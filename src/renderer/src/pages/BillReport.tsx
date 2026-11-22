@@ -125,7 +125,7 @@ export default function BillReport() {
               <tr key={r.id} className="border-b border-slate-50 dark:border-slate-800/50 hover:bg-slate-50 dark:hover:bg-slate-800/40">
                 <td className="p-2 text-slate-400">{i + 1}</td>
                 <td className="p-2 font-mono text-xs">{r.code}</td>
-                <td className="p-2 font-medium">{r.name}</td>
+                <td className="p-2 font-medium">{r.name}{r.connection_type === 'free' && <span className="badge bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300 ml-1">{t('free')}</span>}</td>
                 <td className="p-2 text-xs text-slate-500 max-w-[140px] truncate">{r.address || '-'}</td>
                 <td className="p-2">{r.mobile}</td>
                 <td className="p-2 text-right">{money(r.month_bill)}</td>
@@ -318,7 +318,7 @@ export function buildBillHtml(info: any, copy: Copy, selectedPaymentId?: number 
         <div class="sect">BILL INFORMATION</div>
         <table class="kv">
           <tr><td>Billing Month</td><td><b>${esc(ml)}</b></td></tr>
-          <tr><td>Monthly Bill</td><td>${esc(f.monthBill)}</td></tr>
+          <tr><td>Monthly Bill</td><td>${esc(f.monthBill)}${info.customer?.connection_type === 'free' ? ' <span style=\"color:#0369a1\">(FREE)</span>' : ''}</td></tr>
           <tr><td>Previous Due</td><td>${esc(f.prevDue)}</td></tr>
           <tr><td>Additional Charges</td><td>${esc(f.additional)}</td></tr>
           <tr><td>Discount</td><td>${esc(f.discount)}</td></tr>

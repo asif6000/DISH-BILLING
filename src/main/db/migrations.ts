@@ -684,4 +684,14 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE customers ADD COLUMN customer_serial INTEGER;
   CREATE INDEX idx_customers_area_serial ON customers(area_id, customer_serial);
   `
+,
+  `-- Version 16: connection type (paid/free) for customers.
+  -- The New Connections form's Paid/Free dropdown writes here. Free connections
+  -- always keep monthly_bill = 0 and connection_fee = 0 (enforced in the IPC
+  -- create/update handlers), are skipped by monthly bill generation and are
+  -- shown as Free in the customer list, profile, billing and reports.
+  -- The old note column is NOT repurposed — existing note data stays untouched.
+  ALTER TABLE customers ADD COLUMN connection_type TEXT NOT NULL DEFAULT 'paid';
+  CREATE INDEX idx_customers_conn_type ON customers(connection_type);
+  `
 ]

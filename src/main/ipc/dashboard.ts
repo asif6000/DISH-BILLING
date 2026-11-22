@@ -10,7 +10,9 @@ export function registerDashboardIpc(): void {
     const sc: Record<string, number> = { active: 0, inactive: 0, disconnected: 0, expired: 0, free: 0 }
     let totalCustomers = 0
     for (const r of statusCounts) { totalCustomers += r.c; sc[r.status] = r.c }
-    const pkgFree = (db.prepare(`SELECT COUNT(*) AS c FROM customers c JOIN packages p ON p.id = c.package_id WHERE c.status = 'active' AND p.type = 'free'`).get() as any).c
+    // free = free-type package OR the Paid/Free connection dropdown (LEFT JOIN so
+    // free connections without any package are counted too)
+    const pkgFree = (db.prepare(`SELECT COUNT(*) AS c FROM customers c LEFT JOIN packages p ON p.id = c.package_id WHERE c.status = 'active' AND (p.type = 'free' OR c.connection_type = 'free')`).get() as any).c
 
     const billAgg = db.prepare(`SELECT COALESCE(SUM(total),0) AS billed, COALESCE(SUM(paid),0) AS paid
       FROM bills WHERE month = ? AND status != 'cancelled'`).get(month) as { billed: number; paid: number }

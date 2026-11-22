@@ -60,7 +60,14 @@ export default function BillingPage({ mode }: { mode?: 'generate' | 'history' })
     { key: 'month', label: t('month') },
     { key: 'invoice_no', label: t('invoiceNo'), className: 'font-mono text-xs' },
     { key: 'customer_code', label: t('customerCode'), className: 'font-mono text-xs' },
-    { key: 'customer_name', label: t('name') },
+    { key: 'customer_name', label: t('name'), render: (r) => (
+      <span>
+        {r.customer_name}
+        {r.connection_type === 'free' && (
+          <span className="badge bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300 ml-1">{t('free')}</span>
+        )}
+      </span>
+    ) },
     { key: '_area', label: t('area') },
     { key: 'amount', label: t('billAmount'), align: 'right', render: (r) => money(r.amount) },
     { key: 'discount', label: t('discount'), align: 'right', render: (r) => r.discount ? money(r.discount) : '-' },

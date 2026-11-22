@@ -69,18 +69,49 @@ async function main() {
   let threw2 = false
   try { await H['customers:create'](fakeEvent, { name: 'Bad', mobile: '12345' }) } catch (e: any) { threw2 = e.message.includes('INVALID_MOBILE') }
   ok('invalid mobile rejected', threw2)
+  // Paid/Free connection dropdown: Paid keeps amounts, Free forces 0/0
+  const cPaid = await H['customers:create'](fakeEvent, { name: 'Paid Conn', mobile: '01311111111', area_id: areaId, package_id: pkgId, monthly_bill: 250, connection_fee: 400, connection_type: 'paid', note: 'old note kept' })
+  const paidRow = await H['customers:get'](fakeEvent, cPaid)
+  ok('paid connection saves amounts + type', paidRow.customer.monthly_bill === 250 && paidRow.customer.connection_fee === 400 && paidRow.customer.connection_type === 'paid' && paidRow.customer.note === 'old note kept', paidRow.customer)
+  const cFree = await H['customers:create'](fakeEvent, { name: 'Free Conn', mobile: '01322222222', area_id: areaId, package_id: pkgId, monthly_bill: 250, connection_fee: 400, connection_type: 'free', note: 'should be ignored for amounts' })
+  const freeRow = await H['customers:get'](fakeEvent, cFree)
+  ok('free connection forces ৳0 amounts + Free type', freeRow.customer.monthly_bill === 0 && freeRow.customer.connection_fee === 0 && freeRow.customer.connection_type === 'free', freeRow.customer)
+  let threwConnType = false
+  try { await H['customers:create'](fakeEvent, { name: 'Bad Type', mobile: '01333333333', connection_type: 'half' }) } catch (e: any) { threwConnType = e.message.includes('INVALID_CONNECTION_TYPE') }
+  ok('invalid connection type rejected', threwConnType)
+  // switching Free → Paid restores editable amounts; editing loads saved type
+  await H['customers:update'](fakeEvent, cFree, { connection_type: 'paid', monthly_bill: 200, connection_fee: 100 })
+  const switched = await H['customers:get'](fakeEvent, cFree)
+  ok('free → paid switch saves new amounts', switched.customer.connection_type === 'paid' && switched.customer.monthly_bill === 200 && switched.customer.connection_fee === 100, switched.customer)
+  await H['customers:update'](fakeEvent, cPaid, { connection_type: 'free', monthly_bill: 999, connection_fee: 999 })
+  const toFree = await H['customers:get'](fakeEvent, cPaid)
+  ok('paid → free switch zeroes amounts (no stale values)', toFree.customer.connection_type === 'free' && toFree.customer.monthly_bill === 0 && toFree.customer.connection_fee === 0, toFree.customer)
+  ok('note data preserved through type changes', toFree.customer.note === 'old note kept', toFree.customer.note)
+  // free list filter includes the new connection_type flag
+  const freeList = await H['customers:list'](fakeEvent, { status: 'free', all: true })
+  ok('free status filter follows connection_type', freeList.rows.some((r: any) => r.id === cPaid) && !freeList.rows.some((r: any) => r.id === cFree), freeList.rows.map((r: any) => r.id))
+  // cleanup: remove the two dropdown-test customers so status counts in later
+  // sections stay identical to before (also exercises bulk delete again)
+  const delMany = await H['customers:deleteMany'](fakeEvent, [cPaid, cFree])
+  ok('connection-type test customers cleaned up', delMany.deleted === 2, delMany)
   const cGet = await H['customers:get'](fakeEvent, c1)
   ok('customer get with relations', cGet.customer._area === 'Mirpur' && cGet.customer._package === 'Basic')
 
   section('billing generation')
   const month = new Date().toISOString().slice(0, 7)
+  // Paid/Free dropdown: a free connection is created then billing must SKIP it
+  const cFreeB = await H['customers:create'](fakeEvent, { name: 'Free Bill Skip', mobile: '01344444444', area_id: areaId, package_id: pkgId, monthly_bill: 250, connection_type: 'free' })
   const gen1 = await H['billing:generate'](fakeEvent, month, undefined, 'manual')
-  ok('bills generated for active customers', gen1.created === 3, gen1)
+  ok('bills generated for active customers (free connection skipped)', gen1.created === 3 && gen1.skipped === 1, gen1)
+  const freeBills = await H['customers:get'](fakeEvent, cFreeB)
+  ok('free connection has no bill at all', freeBills.bills.length === 0, freeBills.bills)
+  await H['customers:delete'](fakeEvent, cFreeB)
   const gen2 = await H['billing:generate'](fakeEvent, month, undefined, 'manual')
   ok('duplicate generation prevented', gen2.created === 0 && gen2.skipped === 3, gen2)
   const billList = await H['billing:list'](fakeEvent, { month })
   const freeBill = billList.rows.find((b: any) => b.customer_id === c3)
   ok('free package bill amount 0', Number(freeBill.amount) === 0, freeBill)
+  ok('bill rows carry connection_type', typeof billList.rows[0].connection_type === 'string', billList.rows[0])
   const basicBill = billList.rows.find((b: any) => b.customer_id === c1)
   ok('basic bill amount 300', Number(basicBill.total) === 300, basicBill)
 

@@ -129,7 +129,7 @@ export function registerReportIpc(): void {
     const collectorClause = hasCollector
       ? ` AND EXISTS (SELECT 1 FROM payments pay WHERE pay.customer_id = c.id AND substr(pay.payment_date,1,7) BETWEEN '${from}' AND '${to}' AND pay.collector_id = ${hasCollector})`
       : ''
-    const rows = db.prepare(`SELECT c.id, c.code, c.name, c.mobile, c.address, a.name AS area, c.monthly_bill,
+    const rows = db.prepare(`SELECT c.id, c.code, c.name, c.mobile, c.address, a.name AS area, c.monthly_bill, c.connection_type,
         COALESCE((SELECT SUM(b.amount) FROM bills b WHERE b.customer_id = c.id AND b.month >= ? AND b.month <= ? AND b.status != 'cancelled'),0) AS month_bill,
         COALESCE((SELECT SUM(b.late_fee) FROM bills b WHERE b.customer_id = c.id AND b.month >= ? AND b.month <= ? AND b.status != 'cancelled'),0) AS additional,
         COALESCE((SELECT SUM(b.discount) FROM bills b WHERE b.customer_id = c.id AND b.month >= ? AND b.month <= ? AND b.status != 'cancelled'),0) AS discount,

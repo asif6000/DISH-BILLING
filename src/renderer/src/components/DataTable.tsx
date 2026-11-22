@@ -26,13 +26,21 @@ interface DataTableProps {
   exportName?: string
   extraToolbar?: React.ReactNode
   emptyText?: string
+  // row selection (checkboxes) — used for select-all / bulk delete etc.
+  selectable?: boolean
+  selectedIds?: number[]
+  onToggleRow?: (id: number, checked: boolean) => void
+  onToggleAllPage?: (checked: boolean) => void
 }
 
-export function DataTable({ columns, rows, total, page, pageSize, onPage, search, onSearch, loading, actions, exportName, extraToolbar, emptyText }: DataTableProps) {
+export function DataTable({ columns, rows, total, page, pageSize, onPage, search, onSearch, loading, actions, exportName, extraToolbar, emptyText, selectable, selectedIds, onToggleRow, onToggleAllPage }: DataTableProps) {
   const { t } = useI18n()
   const [localSearch, setLocalSearch] = useState('')
   const toast = useToast()
   const debounced = useRef<ReturnType<typeof setTimeout>>()
+  const sel = useMemo(() => new Set(selectedIds || []), [selectedIds])
+  const pageIds = rows.map((r) => r.id).filter((id) => id != null)
+  const allPageSelected = pageIds.length > 0 && pageIds.every((id) => sel.has(id))
 
   const onSearchInput = (v: string) => {
     setLocalSearch(v)
@@ -81,6 +89,13 @@ export function DataTable({ columns, rows, total, page, pageSize, onPage, search
         <table className="w-full min-w-max">
           <thead>
             <tr className="bg-slate-50 dark:bg-slate-800/50">
+              {selectable && (
+                <th className="table-th w-8 text-center">
+                  <input type="checkbox" className="cursor-pointer" title={t('selectAll')}
+                    checked={allPageSelected}
+                    onChange={(e) => onToggleAllPage?.(e.target.checked)} />
+                </th>
+              )}
               {columns.map((c) => (
                 <th key={c.key} className={`table-th ${c.align === 'right' ? 'text-right' : c.align === 'center' ? 'text-center' : ''} ${c.className || ''}`}>{c.label}</th>
               ))}
@@ -89,13 +104,19 @@ export function DataTable({ columns, rows, total, page, pageSize, onPage, search
           </thead>
           <tbody>
             {loading && (
-              <tr><td colSpan={columns.length + (actions ? 1 : 0)} className="table-td text-center py-10 text-slate-400">{t('loading')}</td></tr>
+              <tr><td colSpan={columns.length + (actions ? 1 : 0) + (selectable ? 1 : 0)} className="table-td text-center py-10 text-slate-400">{t('loading')}</td></tr>
             )}
             {!loading && !rows.length && (
-              <tr><td colSpan={columns.length + (actions ? 1 : 0)} className="table-td text-center py-10 text-slate-400">{emptyText || t('noData')}</td></tr>
+              <tr><td colSpan={columns.length + (actions ? 1 : 0) + (selectable ? 1 : 0)} className="table-td text-center py-10 text-slate-400">{emptyText || t('noData')}</td></tr>
             )}
             {!loading && rows.map((row, i) => (
-              <tr key={row.id ?? i} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
+              <tr key={row.id ?? i} className={`hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors ${row.id != null && sel.has(row.id) ? 'bg-brand-50/60 dark:bg-brand-900/20' : ''}`}>
+                {selectable && (
+                  <td className="table-td text-center w-8">
+                    <input type="checkbox" className="cursor-pointer" checked={row.id != null && sel.has(row.id)}
+                      onChange={(e) => onToggleRow?.(row.id, e.target.checked)} />
+                  </td>
+                )}
                 {columns.map((c) => (
                   <td key={c.key} className={`table-td ${c.align === 'right' ? 'text-right' : c.align === 'center' ? 'text-center' : ''} ${c.className || ''}`}>
                     {c.render ? c.render(row) : formatCell(row[c.key])}

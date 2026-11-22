@@ -41,7 +41,8 @@ export function registerCustomerIpc(): void {
       where.push(`c.status = 'active' AND (SELECT SUM(b.total - b.paid) FROM bills b WHERE b.customer_id = c.id AND b.status != 'cancelled') >
         (SELECT c.monthly_bill * 2)`)
     } else if (status === 'free') {
-      where.push(`c.status = 'active' AND p.type = 'free'`)
+      // free = free-type package OR the Paid/Free connection dropdown set to Free
+      where.push(`c.status = 'active' AND (p.type = 'free' OR c.connection_type = 'free')`)
     } else if (status) {
       where.push(`c.status = ?`)
       args.push(status)
@@ -76,16 +77,23 @@ export function registerCustomerIpc(): void {
     if (!data.name || !data.mobile) throw new Error('REQUIRED:name,mobile')
     if (!/^01[3-9]\d{8}$/.test(String(data.mobile).trim())) throw new Error('INVALID_MOBILE')
     const code = nextSeq('customer_seq', 5, 'AVA-')
+    // connection type: Paid (default) / Free. Free connections never carry
+    // amounts — both are forced to 0 so hidden form fields can't submit old
+    // values (frontend also zeroes them; this is the authoritative check).
+    if (data.connection_type != null && !['paid', 'free'].includes(data.connection_type)) throw new Error('INVALID_CONNECTION_TYPE')
+    const connType = data.connection_type === 'free' ? 'free' : 'paid'
+    const monthlyBill = connType === 'free' ? 0 : (Number(data.monthly_bill) || 0)
+    const connFee = connType === 'free' ? 0 : (Number(data.connection_fee) || 0)
     const serial = data.customer_serial != null && String(data.customer_serial).trim() !== '' ? Math.trunc(Number(data.customer_serial)) : null
     if (serial != null && (isNaN(serial) || serial < 0)) throw new Error('INVALID_SERIAL')
     const r = db.prepare(`INSERT INTO customers
       (code, name, father_name, mobile, address, area_id, sub_area_id, road_id, branch_id, reseller_id,
-       connection_date, package_id, monthly_bill, connection_fee, status, nid, note, customer_serial)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+       connection_date, package_id, monthly_bill, connection_fee, status, nid, note, customer_serial, connection_type)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(code, data.name.trim(), data.father_name || null, String(data.mobile).trim(), data.address || null,
         data.area_id || null, data.sub_area_id || null, data.road_id || null, data.branch_id || null, data.reseller_id || null,
-        data.connection_date || today(), data.package_id || null, Number(data.monthly_bill) || 0,
-        Number(data.connection_fee) || 0, data.status || 'active', data.nid || null, data.note || null, serial)
+        data.connection_date || today(), data.package_id || null, monthlyBill,
+        connFee, data.status || 'active', data.nid || null, data.note || null, serial, connType)
     const customerId = Number(r.lastInsertRowid)
     db.prepare('INSERT INTO customer_connections (customer_id, action, to_value, date, note, created_by) VALUES (?,?,?,?,?,?)')
       .run(customerId, 'new', 'connection', data.connection_date || today(), 'New connection', s.username)
@@ -181,15 +189,21 @@ export function registerCustomerIpc(): void {
     const old = db.prepare('SELECT * FROM customers WHERE id = ?').get(id) as any
     if (!old) throw new Error('NOT_FOUND')
     if (data.mobile && !/^01[3-9]\d{8}$/.test(String(data.mobile).trim())) throw new Error('INVALID_MOBILE')
+    // connection type change: Paid/Free dropdown. Free forces both amounts to 0
+    // (authoritative backend check — hidden fields can't submit old values).
+    if (data.connection_type != null && !['paid', 'free'].includes(data.connection_type)) throw new Error('INVALID_CONNECTION_TYPE')
+    const newConnType = data.connection_type === 'free' || data.connection_type === 'paid' ? data.connection_type : (old.connection_type || 'paid')
+    const isFree = newConnType === 'free'
     db.prepare(`UPDATE customers SET name=?, father_name=?, mobile=?, address=?, area_id=?, sub_area_id=?, road_id=?,
-      branch_id=?, reseller_id=?, connection_date=?, package_id=?, monthly_bill=?, connection_fee=?, status=?, nid=?, note=?, customer_serial=? WHERE id=?`)
+      branch_id=?, reseller_id=?, connection_date=?, package_id=?, monthly_bill=?, connection_fee=?, status=?, nid=?, note=?, customer_serial=?, connection_type=? WHERE id=?`)
       .run(data.name ?? old.name, data.father_name ?? old.father_name, data.mobile ?? old.mobile,
         data.address ?? old.address, data.area_id ?? old.area_id, data.sub_area_id ?? old.sub_area_id,
         data.road_id ?? old.road_id, data.branch_id ?? old.branch_id, data.reseller_id ?? old.reseller_id,
         data.connection_date ?? old.connection_date, data.package_id ?? old.package_id,
-        data.monthly_bill ?? old.monthly_bill, data.connection_fee ?? old.connection_fee,
+        isFree ? 0 : (data.monthly_bill ?? old.monthly_bill), isFree ? 0 : (data.connection_fee ?? old.connection_fee),
         data.status ?? old.status, data.nid ?? old.nid, data.note ?? old.note,
-        data.customer_serial !== undefined ? (data.customer_serial === null || String(data.customer_serial).trim() === '' ? null : Math.trunc(Number(data.customer_serial)) || null) : old.customer_serial, id)
+        data.customer_serial !== undefined ? (data.customer_serial === null || String(data.customer_serial).trim() === '' ? null : Math.trunc(Number(data.customer_serial)) || null) : old.customer_serial,
+        newConnType, id)
     // package change → upgrade/downgrade log
     if (data.package_id && data.package_id !== old.package_id) {
       const oldP = old.package_id ? db.prepare('SELECT name FROM packages WHERE id=?').get(old.package_id) as any : null
@@ -215,6 +229,40 @@ export function registerCustomerIpc(): void {
       .run(id, actionMap[status] || 'status_change', status, today(), note || '', s.username)
     logActivity(s.userId, s.username, 'customer_status', 'customers', `${id} -> ${status}`)
     return true
+  })
+
+  // Hard delete ONE customer — bills, payments, connections, documents,
+  // complaints & discounts all go too (ON DELETE CASCADE in the schema).
+  ipcMain.handle('customers:delete', (e, id: number) => {
+    const s = requirePermission(e, 'customers', 'delete')
+    const db = getDb()
+    const c = db.prepare('SELECT code, name FROM customers WHERE id = ?').get(id) as any
+    if (!c) throw new Error('NOT_FOUND')
+    db.prepare('DELETE FROM customers WHERE id = ?').run(id)
+    logActivity(s.userId, s.username, 'delete_customer', 'customers', `${c.code} (${c.name})`)
+    return true
+  })
+
+  // Bulk delete — select-all / multi-select from the customer list.
+  ipcMain.handle('customers:deleteMany', (e, ids: number[]) => {
+    const s = requirePermission(e, 'customers', 'delete')
+    const db = getDb()
+    const list = (ids || []).map(Number).filter((n) => Number.isInteger(n) && n > 0)
+    if (!list.length) return { deleted: 0 }
+    let deleted = 0
+    db.exec('BEGIN')
+    try {
+      const del = db.prepare('DELETE FROM customers WHERE id = ?')
+      for (const id of list) {
+        if (del.run(id).changes) deleted++
+      }
+      db.exec('COMMIT')
+    } catch (err) {
+      db.exec('ROLLBACK')
+      throw err
+    }
+    logActivity(s.userId, s.username, 'bulk_delete_customers', 'customers', `${deleted}/${list.length}`)
+    return { deleted }
   })
 
   ipcMain.handle('customers:transfer', (e, id: number, data: { area_id: number; sub_area_id?: number; road_id?: number; address?: string }) => {

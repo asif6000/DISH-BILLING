@@ -56,6 +56,11 @@ export default function CustomerProfile() {
             <Info label={t('address')} value={c.address} />
             <Info label={t('area')} value={c._area} />
             <Info label={t('package')} value={c._package} />
+            <Info label={t('connectionType')} value={
+              c.connection_type === 'free'
+                ? <span className="badge bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">{t('free')}</span>
+                : t('connectionPaid')
+            } />
             <Info label={t('connectionDate')} value={dateFmt(c.connection_date)} />
             <Info label={t('monthlyBill')} value={'৳ ' + money(c.monthly_bill)} />
             <Info label={t('connectionFee')} value={'৳ ' + money(c.connection_fee)} />

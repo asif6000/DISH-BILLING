@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { Plus, Eye, Wallet, Power, RefreshCw, FileSpreadsheet } from 'lucide-react'
+import { Plus, Eye, Wallet, Power, RefreshCw, FileSpreadsheet, Trash2 } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useI18n } from '../lib/i18n'
@@ -16,6 +16,7 @@ export default function CustomersPage({ titleKey, mode }: { titleKey?: string; m
   const can = useCan()
   const canCreate = can('customers', 'create')
   const canEdit = can('customers', 'edit')
+  const canDelete = can('customers', 'delete')
   const [params] = useSearchParams()
   const statusParam = params.get('status') || 'all'
   const [rows, setRows] = useState<any[]>([])
@@ -26,6 +27,10 @@ export default function CustomersPage({ titleKey, mode }: { titleKey?: string; m
   const [formOpen, setFormOpen] = useState(!!mode)
   const [importOpen, setImportOpen] = useState(false)
   const [toggling, setToggling] = useState<any>(null)
+  // delete: single-row (deleting) and multi-select (bulk) with confirm dialogs
+  const [selected, setSelected] = useState<number[]>([])
+  const [deleting, setDeleting] = useState<any>(null)
+  const [bulkDeleting, setBulkDeleting] = useState(false)
   // Area filter dropdown (between Search and the Excel/PDF/CSV buttons)
   const [areaFilter, setAreaFilter] = useState('')
   const [areas] = [useReflist('areas')]
@@ -40,7 +45,7 @@ export default function CustomersPage({ titleKey, mode }: { titleKey?: string; m
   const load = useCallback(() => {
     setLoading(true)
     window.api.customers.list({ page, pageSize: 20, search, status: statusParam === 'all' ? undefined : statusParam, areaId: areaFilter ? Number(areaFilter) : undefined })
-      .then((r: any) => { setRows(r.rows); setTotal(r.total) })
+      .then((r: any) => { setRows(r.rows); setTotal(r.total); setSelected([]) })
       .catch((e) => toast.push('error', errMsg(e)))
       .finally(() => setLoading(false))
   }, [page, search, statusParam, areaFilter])
@@ -79,7 +84,14 @@ export default function CustomersPage({ titleKey, mode }: { titleKey?: string; m
     )},
     { key: 'advance_balance', label: t('advance'), align: 'right', render: (r) => r.advance_balance ? money(r.advance_balance) : '-' },
     { key: 'connection_date', label: t('connectionDate'), render: (r) => dateFmt(r.connection_date) },
-    { key: 'status', label: t('statusCol'), render: (r) => <StatusBadge value={r.status} label={t(r.status)} /> }
+    { key: 'status', label: t('statusCol'), render: (r) => (
+      <div className="flex items-center gap-1">
+        <StatusBadge value={r.status} label={t(r.status)} />
+        {r.connection_type === 'free' && (
+          <span className="badge bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300" title={t('connectionType')}>{t('free')}</span>
+        )}
+      </div>
+    ) }
   ]
 
   return (
@@ -89,6 +101,14 @@ export default function CustomersPage({ titleKey, mode }: { titleKey?: string; m
         subtitle={`${total} ${lang === 'bn' ? 'জন গ্রাহক' : 'customers'}${statusParam !== 'all' ? ` — ${statusLabel(statusParam)}` : ''}`}
         actions={
         <div className="flex gap-2">
+          {canDelete && selected.length > 0 && (
+            <>
+              <button className="btn-secondary !border-red-300 dark:!border-red-900 text-red-600 dark:text-red-400" onClick={() => setBulkDeleting(true)}>
+                <Trash2 size={16} /> {t('deleteSelected')} ({selected.length})
+              </button>
+              <button className="btn-secondary" onClick={() => setSelected([])}>{t('cancel')}</button>
+            </>
+          )}
           {canCreate && <button className="btn-secondary" onClick={() => setImportOpen(true)}><FileSpreadsheet size={16} className="text-emerald-600" /> {t('importExcel')}</button>}
           {canCreate && <button className="btn-primary" onClick={() => setFormOpen(true)}><Plus size={16} /> {t('customers_new')}</button>}
         </div>
@@ -106,11 +126,31 @@ export default function CustomersPage({ titleKey, mode }: { titleKey?: string; m
         loading={loading}
         exportName={`customers-${statusParam}${areaFilter ? `-area${areaFilter}` : ''}`}
         emptyText={areaFilter ? (lang === 'bn' ? 'এই এরিয়ায় কোনো গ্রাহক নেই' : 'No customers in this area') : undefined}
+        selectable={canDelete}
+        selectedIds={selected}
+        onToggleRow={(id, checked) => setSelected((s) => checked ? [...s, id] : s.filter((x) => x !== id))}
+        onToggleAllPage={(checked) => setSelected((s) => {
+          const ids = rows.map((r) => r.id)
+          return checked ? [...new Set([...s, ...ids])] : s.filter((x) => !ids.includes(x))
+        })}
         extraToolbar={
-          <select className="input !w-44 !py-1.5" value={areaFilter} onChange={(e) => setAreaFilter(e.target.value)} title={t('area')}>
-            <option value="">{lang === 'bn' ? 'সব এরিয়া' : 'All Areas'}</option>
-            {areas.map((a: any) => <option key={a.id} value={a.id}>{a.label}</option>)}
-          </select>
+          <>
+            <select className="input !w-44 !py-1.5" value={areaFilter} onChange={(e) => setAreaFilter(e.target.value)} title={t('area')}>
+              <option value="">{lang === 'bn' ? 'সব এরিয়া' : 'All Areas'}</option>
+              {areas.map((a: any) => <option key={a.id} value={a.id}>{a.label}</option>)}
+            </select>
+            {canDelete && rows.length > 0 && selected.length < total && (
+              <button className="btn-secondary !py-1.5 text-xs" title={lang === 'bn' ? `সব ${total} জন নির্বাচন করুন (সব পেজ)` : `Select all ${total} customers (all pages)`}
+                onClick={async () => {
+                  try {
+                    const r = await window.api.customers.list({ page: 1, all: true, search, status: statusParam === 'all' ? undefined : statusParam, areaId: areaFilter ? Number(areaFilter) : undefined })
+                    setSelected((r.rows as any[]).map((x) => x.id))
+                  } catch (e) { toast.push('error', errMsg(e)) }
+                }}>
+                {t('selectAll')}
+              </button>
+            )}
+          </>
         }
         actions={(r) => (
           <div className="flex justify-end gap-1">
@@ -122,6 +162,7 @@ export default function CustomersPage({ titleKey, mode }: { titleKey?: string; m
               canEdit && <button className="btn-secondary btn-sm text-emerald-600" title={t('connections_reconnect')}
                 onClick={() => setToggling({ ...r, to: 'active' })}><RefreshCw size={13} /></button>
             )}
+            {canDelete && <button className="btn-secondary btn-sm text-red-600" title={t('delete')} onClick={() => setDeleting(r)}><Trash2 size={13} /></button>}
           </div>
         )}
       />
@@ -139,6 +180,36 @@ export default function CustomersPage({ titleKey, mode }: { titleKey?: string; m
         }}
         title={toggling?.to === 'inactive' ? t('connections_disconnect') : t('connections_reconnect')}
         message={`${toggling?.name} — ${toggling?.code}`}
+      />
+
+      {/* single-row delete */}
+      <ConfirmDialog
+        open={!!deleting}
+        onClose={() => setDeleting(null)}
+        onConfirm={() => {
+          window.api.customers.remove(deleting.id)
+            .then(() => { toast.push('success', t('deleted')); setDeleting(null); load() })
+            .catch((e) => toast.push('error', errMsg(e)))
+        }}
+        title={t('delete')}
+        message={`${deleting?.name} — ${deleting?.code}\n${t('deleteCustomerWarning')}`}
+      />
+
+      {/* bulk delete (selected rows / select all) */}
+      <ConfirmDialog
+        open={bulkDeleting}
+        onClose={() => setBulkDeleting(false)}
+        onConfirm={() => {
+          window.api.customers.deleteMany(selected)
+            .then((res: any) => {
+              toast.push('success', `${res?.deleted ?? 0} ${lang === 'bn' ? 'জন মুছে ফেলা হয়েছে' : 'customer(s) deleted'}`)
+              setBulkDeleting(false)
+              load()
+            })
+            .catch((e) => toast.push('error', errMsg(e)))
+        }}
+        title={t('deleteSelected')}
+        message={`${selected.length} ${lang === 'bn' ? 'জন গ্রাহক নির্বাচিত' : 'customers selected'}\n${t('deleteCustomerWarning')}`}
       />
     </div>
   )
@@ -368,8 +439,12 @@ export function CustomerForm({ open, onClose, onSaved, areas, packages, editing 
     if (!open) return
     setF(editing ? { ...editing } : {
       name: '', father_name: '', mobile: '', address: '', area_id: '', sub_area_id: '', road_id: '',
-      package_id: '', monthly_bill: '', connection_fee: '', connection_date: todayStr(), nid: '', note: '', status: 'active', customer_serial: ''
+      package_id: '', monthly_bill: '', connection_fee: '', connection_date: todayStr(), nid: '', note: '', status: 'active', customer_serial: '',
+      // Paid/Free dropdown — Paid is the default for new connections;
+      // existing rows load their saved type (old rows fall back to Paid)
+      connection_type: 'paid'
     })
+    if (editing) setF((x: any) => ({ ...x, connection_type: editing.connection_type || 'paid' }))
     setErr({})
   }, [open, editing])
 
@@ -382,7 +457,11 @@ export function CustomerForm({ open, onClose, onSaved, areas, packages, editing 
     setErr(e)
     if (Object.keys(e).length) return
     setBusy(true)
-    const data = { ...f, area_id: f.area_id || null, package_id: f.package_id || null, sub_area_id: f.sub_area_id || null, road_id: f.road_id || null }
+    // Free connection: force both amounts to 0 so hidden fields can never
+    // submit stale values (backend re-enforces this as well)
+    const isFree = f.connection_type === 'free'
+    const data = { ...f, area_id: f.area_id || null, package_id: f.package_id || null, sub_area_id: f.sub_area_id || null, road_id: f.road_id || null,
+      monthly_bill: isFree ? 0 : f.monthly_bill, connection_fee: isFree ? 0 : f.connection_fee }
     try {
       if (editing) await window.api.customers.update(editing.id, data)
       else await window.api.customers.create(data)
@@ -420,7 +499,16 @@ export function CustomerForm({ open, onClose, onSaved, areas, packages, editing 
             </select>
           ))}
           {field('customer_serial', lang === 'bn' ? 'ক্রমিক (এরিয়া অনুযায়ী)' : 'Serial (per area)', <input type="number" className="input" value={f.customer_serial ?? ''} onChange={(e) => set('customer_serial', e.target.value)} />)}
-          {field('note', t('note'), <input className="input" value={f.note || ''} onChange={(e) => set('note', e.target.value)} />)}
+          {field('connection_type', t('connectionType'), (
+            <select className="input" value={f.connection_type || 'paid'} onChange={(e) => set('connection_type', e.target.value)}>
+              <option value="paid">{t('connectionPaid')}</option>
+              <option value="free">{t('free')}</option>
+            </select>
+          ))}
+          {/* Note input keeps working for EXISTING connections so old note data
+              stays editable; new-connection form uses the Paid/Free dropdown
+              in its place (note data in the DB is never touched) */}
+          {editing && field('note', t('note'), <input className="input" value={f.note || ''} onChange={(e) => set('note', e.target.value)} />)}
         </div>
         <h4 className="text-xs font-semibold text-slate-400 uppercase mt-4 mb-2">{t('connectionInfo')}</h4>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -436,8 +524,15 @@ export function CustomerForm({ open, onClose, onSaved, areas, packages, editing 
             </select>
           ))}
           {field('connection_date', t('connectionDate'), <input type="date" className="input" value={f.connection_date || ''} onChange={(e) => set('connection_date', e.target.value)} />)}
-          {field('monthly_bill', t('monthlyBill'), <input type="number" min="0" step="0.01" className="input" value={f.monthly_bill ?? ''} onChange={(e) => set('monthly_bill', e.target.value)} />)}
-          {field('connection_fee', t('connectionFee'), <input type="number" min="0" step="0.01" className="input" value={f.connection_fee ?? ''} onChange={(e) => set('connection_fee', e.target.value)} />)}
+          {f.connection_type !== 'free' && field('monthly_bill', t('monthlyBill'), <input type="number" min="0" step="0.01" className="input" value={f.monthly_bill ?? ''} onChange={(e) => set('monthly_bill', e.target.value)} />)}
+          {f.connection_type !== 'free' && field('connection_fee', t('connectionFee'), <input type="number" min="0" step="0.01" className="input" value={f.connection_fee ?? ''} onChange={(e) => set('connection_fee', e.target.value)} />)}
+          {f.connection_type === 'free' && (
+            <div className="sm:col-span-2 text-xs text-slate-500 bg-sky-50 dark:bg-sky-900/20 rounded-lg p-2.5">
+              {lang === 'bn'
+                ? 'ফ্রি কানেকশন: মাসিক বিল ও কানেকশন ফি প্রযোজ্য নয় — উভয়ই ৳0 হিসেবে সেভ হবে এবং মাসিক বিল জেনারেট হবে না।'
+                : 'Free connection: Monthly Bill & Connection Fee do not apply — both save as ৳0 and no monthly bill is generated.'}
+            </div>
+          )}
         </div>
         <div className="flex justify-end gap-2 mt-5">
           <button type="button" className="btn-secondary" onClick={onClose}>{t('cancel')}</button>

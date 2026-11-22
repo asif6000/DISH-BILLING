@@ -23,6 +23,9 @@ export function registerBillingIpc(): void {
     db.exec('BEGIN')
     try {
       for (const c of customers) {
+        // Free connections (Paid/Free dropdown) never get monthly bills —
+        // they owe nothing, so no ৳0/noise bills are generated for them.
+        if (c.connection_type === 'free') { skipped++; continue }
         const existing = db.prepare('SELECT id FROM bills WHERE customer_id = ? AND month = ?').get(c.id, month)
         if (existing) { skipped++; continue }
         const amount = round2(c.monthly_bill > 0 ? c.monthly_bill : (c.package_price || 0))
@@ -63,7 +66,7 @@ export function registerBillingIpc(): void {
     }
     const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : ''
     const total = (db.prepare(`SELECT COUNT(*) AS c FROM bills b JOIN customers c ON c.id = b.customer_id ${whereSql}`).get(...args) as { c: number }).c
-    const rows = db.prepare(`SELECT b.*, c.code AS customer_code, c.name AS customer_name, c.mobile, c.advance_balance, a.name AS _area
+    const rows = db.prepare(`SELECT b.*, c.code AS customer_code, c.name AS customer_name, c.mobile, c.advance_balance, c.connection_type, a.name AS _area
       FROM bills b JOIN customers c ON c.id = b.customer_id LEFT JOIN areas a ON a.id = c.area_id
       ${whereSql} ORDER BY b.month DESC, c.code ASC LIMIT ? OFFSET ?`).all(...args, pageSize, (page - 1) * pageSize)
     const sums = db.prepare(`SELECT COALESCE(SUM(b.total),0) AS total, COALESCE(SUM(b.paid),0) AS paid
