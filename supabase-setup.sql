@@ -66,9 +66,13 @@ create table if not exists app_users (
   mobile text,
   status text not null default 'pending',  -- pending | approved | rejected
   reset_hash text,                          -- new bcrypt password hash set by admin (reset)
+  role_name text,                           -- role the developer assigns remotely (v1.0.55)
   created_at timestamptz not null default now(),
   approved_at timestamptz
 );
+
+-- existing projects: add the column if it is missing (idempotent)
+alter table app_users add column if not exists role_name text;
 
 create table if not exists password_resets (
   id uuid primary key default gen_random_uuid(),
