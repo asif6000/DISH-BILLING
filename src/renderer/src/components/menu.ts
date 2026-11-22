@@ -66,14 +66,6 @@ export const MENU: MenuGroup[] = [
       { labelKey: 'm_package_change', path: '/packages?change=1', icon: 'RefreshCw', perm: 'packages' }
     ]
   },
-  {
-    labelKey: 'm_software_support', icon: 'Bell',
-    children: [
-      { labelKey: 'm_open_ticket2', path: '/complaints?status=pending', icon: 'Bookmark', perm: 'complaints' },
-      { labelKey: 'm_support_numbers2', path: '/support-numbers', icon: 'Phone' },
-      { labelKey: 'm_tutorial', path: '/tutorial', icon: 'Video' }
-    ]
-  },
   { labelKey: 'm_activity_log', icon: 'Clock', path: '/security/logs', perm: 'security' },
   { labelKey: 'security_roles', icon: 'ShieldCheck', path: '/security/roles', perm: 'security' },
   { labelKey: 'm_user_manage', icon: 'UserCog', path: '/security/users', perm: 'users' },

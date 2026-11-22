@@ -8,7 +8,6 @@ import SubscriptionGate from './pages/SubscriptionGate'
 import UpdateGate from './pages/UpdateGate'
 import Dashboard from './pages/Dashboard'
 import SupportNumbers from './pages/SupportNumbers'
-import Tutorial from './pages/Tutorial'
 import CustomersPage from './pages/Customers'
 import CustomerProfile from './pages/CustomerProfile'
 import BillingPage from './pages/Billing'
@@ -89,7 +88,6 @@ function AppInner() {
           <Route path="/pppoe/active" element={<EntityPage entity="pppoe_users" title={t('m_pppoe_active')} fixedFilters={{ status: 'active' }} />} />
           <Route path="/cashier" element={<CashbookPage />} />
           <Route path="/support-numbers" element={<SupportNumbers />} />
-          <Route path="/tutorial" element={<Tutorial />} />
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
 
           {/* Areas */}
