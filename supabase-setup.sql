@@ -115,6 +115,7 @@ grant select on app_user_status to anon;
 
 -- Bulletproof read path (preferred by the app): a SECURITY DEFINER function
 -- runs with the owner's rights, so it is immune to view/RLS misconfiguration.
+drop function if exists get_app_user_status();
 create or replace function get_app_user_status()
 returns table (username text, status text, reset_hash text, role_name text)
 language sql
@@ -129,6 +130,7 @@ grant execute on function get_app_user_status() to anon;
 
 -- Full user list for the desktop app's admin User Management page
 -- (signup list with names/mobiles — approved & pending users visible to the admin)
+drop function if exists get_app_users();
 create or replace function get_app_users()
 returns table (username text, full_name text, mobile text, status text, role_name text, created_at timestamptz, approved_at timestamptz)
 language sql
@@ -159,6 +161,7 @@ create view app_user_status with (security_invoker = false) as
   select username, status, reset_hash, role_name from app_users;
 grant select on app_user_status to anon;
 
+drop function if exists get_app_user_status();
 create or replace function get_app_user_status()
 returns table (username text, status text, reset_hash text, role_name text)
 language sql
@@ -170,6 +173,7 @@ $$;
 revoke all on function get_app_user_status() from public;
 grant execute on function get_app_user_status() to anon;
 
+drop function if exists get_app_users();
 create or replace function get_app_users()
 returns table (username text, full_name text, mobile text, status text, role_name text, created_at timestamptz, approved_at timestamptz)
 language sql
