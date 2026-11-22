@@ -383,6 +383,12 @@ export function buildBillHtml(info: any, copy: Copy, selectedPaymentId?: number 
         <tr><td>তারিখ: ${esc(dateStr)}</td><td class="r">সময়: ${esc(timeStr)}</td></tr>
         <tr><td>লাইসেন্স: ${esc(co.license || '—')}</td><td class="r">কাস্টমার কপি</td></tr>
       </table>
+      <div style="display:flex;justify-content:flex-end;margin-top:12mm">
+        <div style="text-align:center;min-width:50mm">
+          <div style="border-bottom:1.5px solid #000;height:14mm"></div>
+          <div style="font-size:12.5px;font-weight:700;margin-top:3px">কাস্টমারের স্বাক্ষর</div>
+        </div>
+      </div>
       <div class="cc-center foot2">${esc(co.footer || '')}</div>
     </div>
   </div>`
