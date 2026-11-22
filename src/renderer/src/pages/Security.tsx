@@ -224,6 +224,7 @@ function SupabaseUsersCard() {
                 <th className="text-left py-1.5">{t('name')}</th>
                 <th className="text-left py-1.5">{t('mobile')}</th>
                 <th className="text-left py-1.5">{t('statusCol')}</th>
+                <th className="text-left py-1.5">Role</th>
                 <th className="text-left py-1.5">{t('date')}</th>
               </tr>
             </thead>
@@ -234,6 +235,7 @@ function SupabaseUsersCard() {
                   <td className="py-1.5">{u.full_name || '-'}</td>
                   <td className="py-1.5">{u.mobile || '-'}</td>
                   <td className="py-1.5"><span className={`badge ${badge(u.status)}`}>{u.status}</span></td>
+                  <td className="py-1.5 text-xs">{u.role_name || <span className="text-slate-400">Collector (default)</span>}</td>
                   <td className="py-1.5 text-xs text-slate-400">{String(u.approved_at || u.created_at || '').slice(0, 16) || '-'}</td>
                 </tr>
               ))}

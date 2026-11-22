@@ -9,19 +9,13 @@ import { ipcMain } from 'electron'
 import bcrypt from 'bcryptjs'
 import { getDb, logActivity } from '../db'
 import { requirePermission } from './auth'
-import { requireAuth, sessions } from './auth'
+import { requireAuth, sessions, refreshSessionPerms } from './auth'
 import { sbAnonFetch, supabaseConfigured, grantApprovalTrial } from '../subscription'
 
 const PENDING_ROLE = 'Collector'
-
-function pad(n: number): string {
-  return String(n).padStart(2, '0')
-}
-
-function nowIso(): string {
-  const d = new Date()
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-}
+// roles the developer may assign remotely from the admin panel — SUPER_ADMIN is
+// NEVER assignable remotely (security guard)
+const REMOTE_ASSIGNABLE_ROLES = ['Manager', 'Collector', 'Administrator']
 
 // Post a user to Supabase (insert). NOTE: do NOT use on_conflict/ignore-duplicates
 // here — the combination with the RLS insert policy fails (42501). No password hash
@@ -66,6 +60,16 @@ async function syncLocalUsers(): Promise<void> {
   const db = getDb()
   const rows = db.prepare('SELECT username, full_name, mobile, status FROM users ORDER BY id').all() as any[]
   for (const u of rows) await supabaseUpsertUser(u)
+}
+
+// Map a remote role_name from Supabase to the local system role id.
+// Returns null for empty/unknown/SUPER_ADMIN values — remote can never grant
+// or touch the SUPER_ADMIN role.
+export function remoteRoleToLocalRoleId(roleName: unknown): number | null {
+  const name = String(roleName || '').trim()
+  if (!REMOTE_ASSIGNABLE_ROLES.includes(name)) return null
+  const role = getDb().prepare('SELECT id FROM roles WHERE name = ? AND is_system = 1').get(name) as any
+  return role ? Number(role.id) : null
 }
 
 export function registerAccountsIpc(): void {
@@ -124,32 +128,45 @@ export function registerAccountsIpc(): void {
       const m = String(err?.message || '')
       // RPC function not installed (404/42883) → fall back to the view
       if (m.includes('404') || m.includes('42883') || m.includes('does not exist')) {
-        const res = await sbAnonFetch('/rest/v1/app_user_status?select=username,status,reset_hash')
-        return (await res.json()) as any[]
+        try {
+          // view with role_name (projects that ran the v1.0.55 SQL upgrade)
+          const res = await sbAnonFetch('/rest/v1/app_user_status?select=username,status,reset_hash,role_name')
+          return (await res.json()) as any[]
+        } catch {
+          // older project: view exists without the role_name column —
+          // statuses/resets still work, role sync stays off until upgraded
+          const res = await sbAnonFetch('/rest/v1/app_user_status?select=username,status,reset_hash')
+          return (await res.json()) as any[]
+        }
       }
       throw err
     }
   }
 
   ipcMain.handle('accounts:checkRemote', async () => {
-    if (!supabaseConfigured()) return { ok: false, activated: [], reset: [] }
+    if (!supabaseConfigured()) return { ok: false, activated: [], reset: [], roleChanged: [] }
     try {
       await syncLocalUsers()
       const rows = await fetchRemoteStatuses()
-      const remote = new Map<string, { status: string; reset_hash: string | null }>()
-      for (const r of rows || []) remote.set(String(r.username).trim().toLowerCase(), { status: r.status, reset_hash: r.reset_hash || null })
+      const remote = new Map<string, { status: string; reset_hash: string | null; role_name?: string | null }>()
+      for (const r of rows || []) remote.set(String(r.username).trim().toLowerCase(), { status: r.status, reset_hash: r.reset_hash || null, role_name: (r as any).role_name || null })
 
       const db = getDb()
-      const locals = db.prepare('SELECT id, username, password_hash, status FROM users').all() as any[]
+      const locals = db.prepare('SELECT id, username, password_hash, status, role_id FROM users').all() as any[]
       const activated: string[] = []
       const reset: string[] = []
+      const roleChanged: string[] = []
       for (const u of locals) {
         const r = remote.get(u.username.toLowerCase())
         if (!r) continue
-        // approved pending signup -> activate locally + 7-day free trial
+        // approved pending signup -> activate locally + 7-day free trial.
+        // The remote role_name (if set by the developer in the panel) replaces
+        // the default Collector signup role.
         if (u.status === 'pending' && r.status === 'approved') {
-          db.prepare("UPDATE users SET status = 'active', trial_ends = datetime('now','+7 days') WHERE id = ?").run(u.id)
-          logActivity(null, u.username, 'account_approved', 'security')
+          const remoteRoleId = remoteRoleToLocalRoleId((r as any).role_name)
+          db.prepare("UPDATE users SET status = 'active', trial_ends = datetime('now','+7 days'), role_id = COALESCE(?, role_id) WHERE id = ?")
+            .run(remoteRoleId, u.id)
+          logActivity(null, u.username, 'account_approved', 'security', remoteRoleId ? `role=${(r as any).role_name}` : `role=${PENDING_ROLE}`)
           grantApprovalTrial()
           activated.push(u.username)
         }
@@ -168,13 +185,30 @@ export function registerAccountsIpc(): void {
             if (s.username === u.username) sessions.delete(winId)
           }
         }
+
+        // remote role management: the developer sets a role in the admin panel
+        // (app_users.role_name) -> the app applies it to the matching local user
+        if (u.status === 'active' && (r as any).role_name) {
+          const remoteRoleId = remoteRoleToLocalRoleId((r as any).role_name)
+          if (remoteRoleId && remoteRoleId !== u.role_id) {
+            // never touch a local SUPER_ADMIN account from the remote side
+            const localRole = db.prepare('SELECT r.name FROM roles r WHERE r.id = ?').get(u.role_id) as any
+            if (localRole?.name !== 'SUPER_ADMIN') {
+              db.prepare('UPDATE users SET role_id = ? WHERE id = ?').run(remoteRoleId, u.id)
+              logActivity(null, u.username, 'role_change_remote', 'security', `${localRole?.name}→${(r as any).role_name}`)
+              roleChanged.push(u.username)
+              // live session picks up the new permissions without logout
+              refreshSessionPerms(u.id)
+            }
+          }
+        }
       }
-      return { ok: true, activated, reset }
+      return { ok: true, activated, reset, roleChanged }
     } catch (err: any) {
       // surface WHY the remote check failed (missing view/grant, offline, 401...)
       const m = String(err?.message || err || '')
       if (m) logActivity(null, null, 'supabase_check_failed', 'security', m.slice(0, 200))
-      return { ok: false, error: m.slice(0, 200), activated: [], reset: [] }
+      return { ok: false, error: m.slice(0, 200), activated: [], reset: [], roleChanged: [] }
     }
   })
 
@@ -196,5 +230,4 @@ export function registerAccountsIpc(): void {
     requireAuth(e)
     return 'ok'
   })
-  void nowIso
 }

@@ -242,18 +242,21 @@ async function renderAccounts() {
     </div>
     <div class="card" style="padding:0; overflow-x:auto">
       <table><thead><tr>
-        <th>Username</th><th>নাম / মোবাইল</th><th>স্ট্যাটাস</th><th>তারিখ</th><th>অ্যাকশন</th>
+        <th>Username</th><th>নাম / মোবাইল</th><th>স্ট্যাটাস</th><th>রোল (অ্যাপে অটো apply)</th><th>তারিখ</th><th>অ্যাকশন</th>
       </tr></thead><tbody>
         ${shown.length ? shown.map(u => `<tr>
           <td class="mono"><b>${esc(u.username)}</b></td>
           <td>${esc(u.full_name || '—')}<br><span class="muted mono">${esc(u.mobile || '')}</span></td>
           <td><span class="badge b-${esc(u.status)}">${esc(u.status)}</span></td>
+          <td><select data-role-user="${esc(u.username)}" style="padding:4px 6px;border-radius:6px;border:1px solid #d1d5db;font-size:12px">
+            ${['', 'Collector', 'Manager', 'Administrator'].map(rn => `<option value="${rn}"${(u.role_name || '') === rn ? ' selected' : ''}>${rn || '— সেট নেই (Collector)'}</option>`).join('')}
+          </select></td>
           <td class="mono muted">${esc((u.created_at || '').slice(0, 10))}</td>
           <td class="row-btns">
             ${u.status !== 'approved' ? `<button class="btn-ok" data-ok="${esc(u.username)}">✓ Approve</button>` : ''}
             ${u.status !== 'rejected' ? `<button class="btn-no" data-no="${esc(u.username)}">✕ Reject</button>` : ''}
           </td>
-        </tr>`).join('') : '<tr><td colspan="5" class="muted" style="text-align:center;padding:30px">কোনো অ্যাকাউন্ট নেই</td></tr>'}
+        </tr>`).join('') : '<tr><td colspan="6" class="muted" style="text-align:center;padding:30px">কোনো অ্যাকাউন্ট নেই</td></tr>'}
       </tbody></table>
     </div></div>`)
 
@@ -268,6 +271,15 @@ async function renderAccounts() {
   tbl.querySelectorAll('[data-no]').forEach(b => b.onclick = async () => {
     await sb.from('app_users').update({ status: 'rejected' }).eq('username', b.dataset.no)
     renderAccounts()
+  })
+  // remote role management: set the role the customer's app should use
+  tbl.querySelectorAll('[data-role-user]').forEach(sel => sel.onchange = async () => {
+    const username = sel.dataset.roleUser
+    const roleName = sel.value // '' clears the override (app keeps Collector)
+    if (roleName === 'SUPER_ADMIN') { alert('SUPER_ADMIN রিমোট থেকে দেওয়া যাবে না'); renderAccounts(); return }
+    const { error } = await sb.from('app_users').update({ role_name: roleName || null }).eq('username', username)
+    if (error) { alert('রোল সেট করা যায়নি: ' + error.message + '\n\nপ্রথমে supabase-setup.sql-এর নতুন v1.0.55 ব্লকটা SQL Editor-এ রান করুন।'); renderAccounts(); return }
+    alert(`রোল সেট হয়েছে: ${roleName || '(বাদ)'} ✓\n\nকাস্টমারের অ্যাপ খুললে/লগইন স্ক্রিনে গেলে ৩০ সেকেন্ডের মধ্যে নতুন রোল apply হবে।`)
   })
   tbl.querySelectorAll('[data-reset]').forEach(b => b.onclick = async () => {
     const pw = tbl.querySelector('#np-' + CSS.escape(b.dataset.rid)).value

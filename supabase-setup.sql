@@ -105,19 +105,19 @@ create policy "anon can request password reset"
 -- Recreate (not replace) so an old security_invoker view is replaced:
 drop view if exists app_user_status;
 create view app_user_status with (security_invoker = false) as
-  select username, status, reset_hash from app_users;
+  select username, status, reset_hash, role_name from app_users;
 
 grant select on app_user_status to anon;
 
 -- Bulletproof read path (preferred by the app): a SECURITY DEFINER function
 -- runs with the owner's rights, so it is immune to view/RLS misconfiguration.
 create or replace function get_app_user_status()
-returns table (username text, status text, reset_hash text)
+returns table (username text, status text, reset_hash text, role_name text)
 language sql
 security definer
 set search_path = public
 as $$
-  select username, status, reset_hash from app_users;
+  select username, status, reset_hash, role_name from app_users;
 $$;
 
 revoke all on function get_app_user_status() from public;
@@ -126,12 +126,12 @@ grant execute on function get_app_user_status() to anon;
 -- Full user list for the desktop app's admin User Management page
 -- (signup list with names/mobiles — approved & pending users visible to the admin)
 create or replace function get_app_users()
-returns table (username text, full_name text, mobile text, status text, created_at timestamptz, approved_at timestamptz)
+returns table (username text, full_name text, mobile text, status text, role_name text, created_at timestamptz, approved_at timestamptz)
 language sql
 security definer
 set search_path = public
 as $$
-  select username, full_name, mobile, status, created_at, approved_at from app_users order by created_at desc;
+  select username, full_name, mobile, status, role_name, created_at, approved_at from app_users order by created_at desc;
 $$;
 
 revoke all on function get_app_users() from public;
@@ -140,3 +140,39 @@ grant execute on function get_app_users() to anon;
 -- Sanity checks (run in SQL Editor if signup/approval still fails):
 -- select has_table_privilege('anon', 'app_users', 'insert') as anon_can_insert;  -- must be true
 -- select count(*) from app_user_status;                                          -- run as ANON key, must be > 0
+
+-- ============================================================
+-- v1.0.55 UPGRADE (existing projects): remote role management
+-- চালান: Supabase Dashboard → SQL Editor → পুরো ব্লকটা রান করুন
+-- Admin Panel-এর Accounts ট্যাব থেকে ইউজারের role (Collector/Manager/
+-- Administrator) সেট করলে কাস্টমারের অ্যাপে অটো apply হবে।
+-- SUPER_ADMIN রিমোট থেকে কখনো দেওয়া যাবে না (নিরাপত্তা)।
+-- ============================================================
+alter table app_users add column if not exists role_name text;
+
+drop view if exists app_user_status;
+create view app_user_status with (security_invoker = false) as
+  select username, status, reset_hash, role_name from app_users;
+grant select on app_user_status to anon;
+
+create or replace function get_app_user_status()
+returns table (username text, status text, reset_hash text, role_name text)
+language sql
+security definer
+set search_path = public
+as $$
+  select username, status, reset_hash, role_name from app_users;
+$$;
+revoke all on function get_app_user_status() from public;
+grant execute on function get_app_user_status() to anon;
+
+create or replace function get_app_users()
+returns table (username text, full_name text, mobile text, status text, role_name text, created_at timestamptz, approved_at timestamptz)
+language sql
+security definer
+set search_path = public
+as $$
+  select username, full_name, mobile, status, role_name, created_at, approved_at from app_users order by created_at desc;
+$$;
+revoke all on function get_app_users() from public;
+grant execute on function get_app_users() to anon;

@@ -9,7 +9,7 @@ import { useToast } from '../components/ui'
 // Supabase every 30s so remote account approvals and password resets reach
 // the local database automatically.
 export default function Login({ onLogin }: { onLogin: (u: UserInfo) => void }) {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const toast = useToast()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -35,6 +35,7 @@ export default function Login({ onLogin }: { onLogin: (u: UserInfo) => void }) {
       const r: any = await window.api.userAccounts.checkRemote().catch(() => null)
       if (r?.activated?.length) toast.push('success', `${t('accountApproved')} (${r.activated.join(', ')})`)
       if (r?.reset?.length) toast.push('success', `${t('passwordResetApplied')} (${r.reset.join(', ')})`)
+      if (r?.roleChanged?.length) toast.push('success', lang === 'bn' ? `রোল আপডেট হয়েছে: ${r.roleChanged.join(', ')}` : `Role updated: ${r.roleChanged.join(', ')}`)
     }
     check()
     const id = window.setInterval(check, 30_000)
