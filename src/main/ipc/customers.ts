@@ -4,7 +4,7 @@ import { getDb, logActivity, nextSeq, today } from '../db'
 import { requirePermission } from './auth'
 
 const CUSTOMER_SELECT = `
-  SELECT c.*, a.name AS _area, z.name AS _zone, p.name AS _package, p.type AS _package_type,
+  SELECT c.*, c.customer_serial, a.name AS _area, z.name AS _zone, p.name AS _package, p.type AS _package_type,
     r.name AS _reseller, br.name AS _branch,
     COALESCE((SELECT SUM(b.total - b.paid) FROM bills b WHERE b.customer_id = c.id AND b.status != 'cancelled'), 0) AS total_due,
     (SELECT MAX(b.month) FROM bills b WHERE b.customer_id = c.id) AS last_bill_month
@@ -25,9 +25,11 @@ export function registerCustomerIpc(): void {
     const where: string[] = []
     const args: any[] = []
     if (params.search) {
-      where.push(`(c.name LIKE ? OR c.mobile LIKE ? OR c.code LIKE ? OR c.address LIKE ?)`)
+      // area-wise serial numbers are searchable too (e.g. serial 5 finds
+      // serial 5 in every area — the AREA column shows which is which)
+      where.push(`(c.name LIKE ? OR c.mobile LIKE ? OR c.code LIKE ? OR c.address LIKE ? OR CAST(c.customer_serial AS TEXT) LIKE ?)`)
       const like = `%${params.search}%`
-      args.push(like, like, like, like)
+      args.push(like, like, like, like, like)
     }
     const status = params.status
     if (status === 'due') {
@@ -74,14 +76,16 @@ export function registerCustomerIpc(): void {
     if (!data.name || !data.mobile) throw new Error('REQUIRED:name,mobile')
     if (!/^01[3-9]\d{8}$/.test(String(data.mobile).trim())) throw new Error('INVALID_MOBILE')
     const code = nextSeq('customer_seq', 5, 'AVA-')
+    const serial = data.customer_serial != null && String(data.customer_serial).trim() !== '' ? Math.trunc(Number(data.customer_serial)) : null
+    if (serial != null && (isNaN(serial) || serial < 0)) throw new Error('INVALID_SERIAL')
     const r = db.prepare(`INSERT INTO customers
       (code, name, father_name, mobile, address, area_id, sub_area_id, road_id, branch_id, reseller_id,
-       connection_date, package_id, monthly_bill, connection_fee, status, nid, note)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+       connection_date, package_id, monthly_bill, connection_fee, status, nid, note, customer_serial)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(code, data.name.trim(), data.father_name || null, String(data.mobile).trim(), data.address || null,
         data.area_id || null, data.sub_area_id || null, data.road_id || null, data.branch_id || null, data.reseller_id || null,
         data.connection_date || today(), data.package_id || null, Number(data.monthly_bill) || 0,
-        Number(data.connection_fee) || 0, data.status || 'active', data.nid || null, data.note || null)
+        Number(data.connection_fee) || 0, data.status || 'active', data.nid || null, data.note || null, serial)
     const customerId = Number(r.lastInsertRowid)
     db.prepare('INSERT INTO customer_connections (customer_id, action, to_value, date, note, created_by) VALUES (?,?,?,?,?,?)')
       .run(customerId, 'new', 'connection', data.connection_date || today(), 'New connection', s.username)
@@ -92,7 +96,7 @@ export function registerCustomerIpc(): void {
   // Excel import: bulk create customers (no bills/payments generated).
   // Server-side validation: name required, mobile normalized (Bangla digits ok),
   // duplicates rejected (existing DB mobiles + duplicates inside the file).
-  ipcMain.handle('customers:import', (e, rows: { name?: string; address?: string; mobile?: string }[], areaId?: number) => {
+  ipcMain.handle('customers:import', (e, rows: { name?: string; address?: string; mobile?: string; serial?: any; areaName?: string }[], areaId?: number) => {
     const s = requirePermission(e, 'customers', 'create')
     const db = getDb()
     const normalizeMobile = (m: any): string => {
@@ -104,26 +108,62 @@ export function registerCustomerIpc(): void {
       if (d.length === 11 && d.startsWith('1')) d = '0' + d
       return d
     }
+    // area-wise serials: the same serial number exists in MANY areas — only
+    // area_id + customer_serial together identify a customer for duplicates.
+    const areas = db.prepare('SELECT id, name FROM areas').all() as any[]
+    const areaByName = new Map<string, number>(areas.map((a) => [String(a.name).trim().toLowerCase(), a.id]))
+    const parseSerial = (v: any): number | null => {
+      const bn = '০১২৩৪৫৬৭৮৯'
+      const d = String(v ?? '').trim().replace(/[০-৯]/g, (c) => String(bn.indexOf(c)))
+      if (!d) return null
+      const n = Number(d)
+      return isNaN(n) || n < 0 ? null : Math.trunc(n)
+    }
+    // (area_id, customer_serial) pairs already in the database
+    const dbSerials = new Set<string>(
+      (db.prepare('SELECT area_id, customer_serial FROM customers WHERE customer_serial IS NOT NULL').all() as any[])
+        .map((r) => `${r.area_id ?? 'x'}|${r.customer_serial}`)
+    )
     const existing = new Set<string>((db.prepare('SELECT mobile FROM customers').all() as any[]).map((r) => normalizeMobile(r.mobile)))
     let imported = 0, duplicates = 0, invalid = 0
     const errors: string[] = []
     db.exec('BEGIN')
     try {
-      const seen = new Set<string>()
+      const seenMobile = new Set<string>()
+      const seenSerial = new Set<string>() // file-level: area|serial
       for (const row of rows || []) {
         const name = String(row?.name || '').trim()
         const address = String(row?.address || '').trim()
         const mobile = normalizeMobile(row?.mobile)
+        const serial = parseSerial((row as any)?.serial)
         if (!name || !/^01[3-9]\d{8}$/.test(mobile)) { invalid++; errors.push(`${name || mobile || '(empty)'} — invalid`); continue }
-        if (existing.has(mobile) || seen.has(mobile)) { duplicates++; errors.push(`${name} (${mobile}) — duplicate`); continue }
-        seen.add(mobile)
+        // resolve the row's area: selected Area (dropdown) wins, else the Area
+        // column in the Excel file, matched by name against existing areas
+        let rowAreaId: number | null = areaId ?? null
+        const areaName = String((row as any)?.areaName || '').trim()
+        if (rowAreaId == null && areaName) {
+          rowAreaId = areaByName.get(areaName.toLowerCase()) ?? null
+          if (rowAreaId == null) {
+            invalid++; errors.push(`${name} (${mobile}) — area not found: ${areaName}`); continue
+          }
+        }
+        const serialKey = `${rowAreaId ?? 'x'}|${serial ?? ''}`
+        if (existing.has(mobile) || seenMobile.has(mobile)) { duplicates++; errors.push(`${name} (${mobile}) — duplicate mobile`); continue }
+        if (serial != null && (dbSerials.has(serialKey) || seenSerial.has(serialKey))) {
+          duplicates++
+          errors.push(`${name} (${mobile}) — duplicate serial ${serial} in ${areaName || (rowAreaId ? areas.find((a) => a.id === rowAreaId)?.name : 'no area')}`)
+          continue
+        }
+        seenMobile.add(mobile)
+        if (serial != null) seenSerial.add(serialKey)
         const code = nextSeq('customer_seq', 5, 'AVA-')
-        db.prepare(`INSERT INTO customers (code, name, mobile, address, area_id, connection_date, status) VALUES (?,?,?,?,?,?, 'active')`)
-          .run(code, name, mobile, address || null, areaId || null, today())
+        db.prepare(`INSERT INTO customers (code, name, mobile, address, area_id, connection_date, status, customer_serial) VALUES (?,?,?,?,?,?, 'active', ?)`)
+          .run(code, name, mobile, address || null, rowAreaId, today(), serial)
         const customerId = Number((db.prepare('SELECT id FROM customers WHERE code = ?').get(code) as any).id)
         db.prepare('INSERT INTO customer_connections (customer_id, action, to_value, date, note, created_by) VALUES (?,?,?,?,?,?)')
           .run(customerId, 'new', 'connection', today(), 'Excel import', s.username)
         existing.add(mobile)
+        if (serial != null) dbSerials.add(serialKey)
         imported++
       }
       db.exec('COMMIT')
@@ -142,13 +182,14 @@ export function registerCustomerIpc(): void {
     if (!old) throw new Error('NOT_FOUND')
     if (data.mobile && !/^01[3-9]\d{8}$/.test(String(data.mobile).trim())) throw new Error('INVALID_MOBILE')
     db.prepare(`UPDATE customers SET name=?, father_name=?, mobile=?, address=?, area_id=?, sub_area_id=?, road_id=?,
-      branch_id=?, reseller_id=?, connection_date=?, package_id=?, monthly_bill=?, connection_fee=?, status=?, nid=?, note=? WHERE id=?`)
+      branch_id=?, reseller_id=?, connection_date=?, package_id=?, monthly_bill=?, connection_fee=?, status=?, nid=?, note=?, customer_serial=? WHERE id=?`)
       .run(data.name ?? old.name, data.father_name ?? old.father_name, data.mobile ?? old.mobile,
         data.address ?? old.address, data.area_id ?? old.area_id, data.sub_area_id ?? old.sub_area_id,
         data.road_id ?? old.road_id, data.branch_id ?? old.branch_id, data.reseller_id ?? old.reseller_id,
         data.connection_date ?? old.connection_date, data.package_id ?? old.package_id,
         data.monthly_bill ?? old.monthly_bill, data.connection_fee ?? old.connection_fee,
-        data.status ?? old.status, data.nid ?? old.nid, data.note ?? old.note, id)
+        data.status ?? old.status, data.nid ?? old.nid, data.note ?? old.note,
+        data.customer_serial !== undefined ? (data.customer_serial === null || String(data.customer_serial).trim() === '' ? null : Math.trunc(Number(data.customer_serial)) || null) : old.customer_serial, id)
     // package change → upgrade/downgrade log
     if (data.package_id && data.package_id !== old.package_id) {
       const oldP = old.package_id ? db.prepare('SELECT name FROM packages WHERE id=?').get(old.package_id) as any : null

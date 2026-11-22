@@ -675,5 +675,13 @@ export const MIGRATIONS: string[] = [
   INSERT OR IGNORE INTO settings (key, value) VALUES ('company_mobile_alt', '');
   INSERT OR IGNORE INTO settings (key, value) VALUES ('company_email', '');
   INSERT OR IGNORE INTO settings (key, value) VALUES ('company_logo', '');
+  `,
+
+  `-- Version 15: area-wise customer serial numbers.
+  -- Serial numbers are NOT globally unique — each area has its own sequence
+  -- (Area A: 1-15, Area B: 1-25...). Uniqueness is only area_id + customer_serial.
+  -- The global unique customer ID stays the existing customers.code (AVA-XXXXX).
+  ALTER TABLE customers ADD COLUMN customer_serial INTEGER;
+  CREATE INDEX idx_customers_area_serial ON customers(area_id, customer_serial);
   `
 ]

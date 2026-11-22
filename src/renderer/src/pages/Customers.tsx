@@ -26,6 +26,8 @@ export default function CustomersPage({ titleKey, mode }: { titleKey?: string; m
   const [formOpen, setFormOpen] = useState(!!mode)
   const [importOpen, setImportOpen] = useState(false)
   const [toggling, setToggling] = useState<any>(null)
+  // Area filter dropdown (between Search and the Excel/PDF/CSV buttons)
+  const [areaFilter, setAreaFilter] = useState('')
   const [areas] = [useReflist('areas')]
   const [packages] = [useReflist('packages')]
 
@@ -37,15 +39,15 @@ export default function CustomersPage({ titleKey, mode }: { titleKey?: string; m
 
   const load = useCallback(() => {
     setLoading(true)
-    window.api.customers.list({ page, pageSize: 20, search, status: statusParam === 'all' ? undefined : statusParam })
+    window.api.customers.list({ page, pageSize: 20, search, status: statusParam === 'all' ? undefined : statusParam, areaId: areaFilter ? Number(areaFilter) : undefined })
       .then((r: any) => { setRows(r.rows); setTotal(r.total) })
       .catch((e) => toast.push('error', errMsg(e)))
       .finally(() => setLoading(false))
-  }, [page, search, statusParam])
+  }, [page, search, statusParam, areaFilter])
 
   useEffect(() => { load() }, [load])
 
-  useEffect(() => { setPage(1) }, [statusParam, search])
+  useEffect(() => { setPage(1) }, [statusParam, search, areaFilter])
 
   const statusLabel = (s: string) => {
     if (s === 'due' || s === 'paid' || s === 'expired' || s === 'free' || s === 'all') return s
@@ -54,7 +56,16 @@ export default function CustomersPage({ titleKey, mode }: { titleKey?: string; m
   }
 
   const columns: Column[] = [
-    { key: 'code', label: t('customerCode'), className: 'font-mono text-xs' },
+    { key: 'code', label: t('customerCode'), className: 'font-mono text-xs', render: (r) => (
+      <div>
+        <span className="font-mono text-xs">{r.code}</span>
+        {/* area-wise serial: the same serial can exist in other areas — the
+            AREA column next to it shows which area this serial belongs to */}
+        {r.customer_serial != null && (
+          <div className="text-[10px] text-slate-400">{lang === 'bn' ? 'ক্রমিক' : 'Serial'} {r.customer_serial}</div>
+        )}
+      </div>
+    )},
     { key: 'name', label: t('name'), render: (r) => (
       <Link to={`/customers/profile/${r.id}`} className="font-medium text-brand-600 hover:underline">{r.name}</Link>
     )},
@@ -93,7 +104,14 @@ export default function CustomersPage({ titleKey, mode }: { titleKey?: string; m
         search={search}
         onSearch={setSearch}
         loading={loading}
-        exportName={`customers-${statusParam}`}
+        exportName={`customers-${statusParam}${areaFilter ? `-area${areaFilter}` : ''}`}
+        emptyText={areaFilter ? (lang === 'bn' ? 'এই এরিয়ায় কোনো গ্রাহক নেই' : 'No customers in this area') : undefined}
+        extraToolbar={
+          <select className="input !w-44 !py-1.5" value={areaFilter} onChange={(e) => setAreaFilter(e.target.value)} title={t('area')}>
+            <option value="">{lang === 'bn' ? 'সব এরিয়া' : 'All Areas'}</option>
+            {areas.map((a: any) => <option key={a.id} value={a.id}>{a.label}</option>)}
+          </select>
+        }
         actions={(r) => (
           <div className="flex justify-end gap-1">
             <Link to={`/customers/profile/${r.id}`} className="btn-secondary btn-sm" title={t('profile')}><Eye size={13} /></Link>
@@ -129,10 +147,22 @@ export default function CustomersPage({ titleKey, mode }: { titleKey?: string; m
 // ---------- Customer Form ----------
 
 // ================= Excel Import (Bangla + English headers) =================
-const HEADER_MAP: Record<string, 'name' | 'address' | 'mobile'> = {
+const HEADER_MAP: Record<string, 'name' | 'address' | 'mobile' | 'serial' | 'area'> = {
   'নাম': 'name', 'name': 'name', 'গ্রাহকের নাম': 'name', 'customer name': 'name', 'customer': 'name',
   'ঠিকানা': 'address', 'address': 'address',
-  'যোগাযোগ': 'mobile', 'মোবাইল': 'mobile', 'মোবাইল নম্বর': 'mobile', 'mobile': 'mobile', 'phone': 'mobile', 'contact': 'mobile', 'mobile number': 'mobile'
+  'যোগাযোগ': 'mobile', 'মোবাইল': 'mobile', 'মোবাইল নম্বর': 'mobile', 'mobile': 'mobile', 'phone': 'mobile', 'contact': 'mobile', 'mobile number': 'mobile',
+  // area-wise customer serial (NOT globally unique — same serial can exist in many areas)
+  'ক্রমিক': 'serial', 'ক্রম': 'serial', 'সিরিয়াল': 'serial', 'serial': 'serial', 'serial no': 'serial', 'serial number': 'serial', 'sl': 'serial', 'sl no': 'serial',
+  // area name column (used when no Area is selected in the dropdown)
+  'এরিয়া': 'area', 'এরিয়ার নাম': 'area', 'area': 'area', 'area name': 'area', 'zone': 'area'
+}
+
+function normalizeSerial(v: any): number | null {
+  const bn = '০১২৩৪৫৬৭৮৯'
+  const d = String(v ?? '').trim().replace(/[০-৯]/g, (c) => String(bn.indexOf(c)))
+  if (!d) return null
+  const n = Number(d)
+  return isNaN(n) || n < 0 ? null : Math.trunc(n)
 }
 
 function normalizeMobile(m: any): string {
@@ -145,7 +175,7 @@ function normalizeMobile(m: any): string {
   return d
 }
 
-interface ImportRow { name: string; address: string; mobile: string; status: 'valid' | 'duplicate' | 'invalid'; reason: string }
+interface ImportRow { name: string; address: string; mobile: string; serial: number | null; areaName: string; areaId: number | null; status: 'valid' | 'duplicate' | 'invalid'; reason: string }
 
 function ExcelImportModal({ areas, onClose, onDone }: { areas: { id: number; label: string }[]; onClose: () => void; onDone: () => void }) {
   const { t, lang } = useI18n()
@@ -185,29 +215,52 @@ function ExcelImportModal({ areas, onClose, onDone }: { areas: { id: number; lab
         const nameCol = Number(Object.entries(cols).find(([, v]) => v === 'name')?.[0] ?? -1)
         const addrCol = Number(Object.entries(cols).find(([, v]) => v === 'address')?.[0] ?? -1)
         const mobCol = Number(Object.entries(cols).find(([, v]) => v === 'mobile')?.[0] ?? -1)
+        const serialCol = Number(Object.entries(cols).find(([, v]) => v === 'serial')?.[0] ?? -1)
+        const areaCol = Number(Object.entries(cols).find(([, v]) => v === 'area')?.[0] ?? -1)
         const name = String(r[nameCol] || '').trim()
         const address = String(r[addrCol] || '').trim()
         const mobile = normalizeMobile(r[mobCol])
+        const serial = normalizeSerial(r[serialCol])
+        const areaName = String(r[areaCol] || '').trim()
+        // resolve area per-row: selected Area (dropdown) wins, else the Area
+        // column matched against existing areas by name
+        let rowAreaId: number | null = areaId ? Number(areaId) : null
+        let areaNote = ''
+        if (rowAreaId == null && areaName) {
+          const hit = areas.find((a: any) => String(a.label || '').trim().toLowerCase() === areaName.toLowerCase())
+          if (hit) { rowAreaId = hit.id; areaNote = areaName }
+        }
         let status: ImportRow['status'] = 'valid'; let reason = ''
         if (!name || !/^01[3-9]\d{8}$/.test(mobile)) { status = 'invalid'; reason = lang === 'bn' ? 'নাম বা মোবাইল সঠিক নয়' : 'Invalid name or mobile' }
-        out.push({ name, address, mobile, status, reason })
+        else if (serialCol >= 0 && serial == null && String(r[serialCol] ?? '').trim()) { status = 'invalid'; reason = lang === 'bn' ? 'ক্রমিক সঠিক নয়' : 'Invalid serial' }
+        out.push({ name, address, mobile, serial, areaName: areaNote || areaName, areaId: rowAreaId, status, reason })
       }
       // duplicate detection: inside file + against existing customers
+      // mobile-based: global; serial-based: area_id + customer_serial pair
+      // (the same serial exists in many areas — only the combination is unique)
       const list = await window.api.customers.list({ page: 1, pageSize: 100000 })
       const existing = new Set<string>((list.rows as any[]).map((c: any) => normalizeMobile(c.mobile)))
-      const seen = new Set<string>()
+      const dbSerials = new Set<string>((list.rows as any[]).filter((c: any) => c.customer_serial != null).map((c: any) => `${c.area_id ?? 'x'}|${c.customer_serial}`))
+      const seenMobile = new Set<string>()
+      const seenSerial = new Set<string>()
       for (const r of out) {
         if (r.status !== 'valid') continue
-        if (existing.has(r.mobile)) { r.status = 'duplicate'; r.reason = lang === 'bn' ? 'ডাটাবেসে আছে' : 'Already in database' }
-        else if (seen.has(r.mobile)) { r.status = 'duplicate'; r.reason = lang === 'bn' ? 'ফাইলে ডুপ্লিকেট' : 'Duplicate in file' }
-        else seen.add(r.mobile)
+        const serialKey = `${r.areaId ?? 'x'}|${r.serial ?? ''}`
+        if (existing.has(r.mobile)) { r.status = 'duplicate'; r.reason = lang === 'bn' ? 'ডাটাবেসে আছে (মোবাইল)' : 'Already in database' }
+        else if (seenMobile.has(r.mobile)) { r.status = 'duplicate'; r.reason = lang === 'bn' ? 'ফাইলে ডুপ্লিকেট (মোবাইল)' : 'Duplicate in file' }
+        else if (r.serial != null && dbSerials.has(serialKey)) { r.status = 'duplicate'; r.reason = lang === 'bn' ? `এরিয়ায় ক্রমিক ${r.serial} আগেই আছে` : `Serial ${r.serial} already in this area` }
+        else if (r.serial != null && seenSerial.has(serialKey)) { r.status = 'duplicate'; r.reason = lang === 'bn' ? `ফাইলে এরিয়ার ক্রমিক ${r.serial} ডুপ্লিকেট` : `Duplicate serial ${r.serial} in area` }
+        else {
+          seenMobile.add(r.mobile)
+          if (r.serial != null) seenSerial.add(serialKey)
+        }
       }
       setRows(out)
     } catch (e) { toast.push('error', errMsg(e)) }
   }
 
   const confirmImport = async () => {
-    const valid = rows.filter((r) => r.status === 'valid').map((r) => ({ name: r.name, address: r.address, mobile: r.mobile }))
+    const valid = rows.filter((r) => r.status === 'valid').map((r) => ({ name: r.name, address: r.address, mobile: r.mobile, serial: r.serial, areaName: r.areaId == null ? r.areaName : undefined }))
     if (!valid.length) { toast.push('error', lang === 'bn' ? 'ইমপোর্ট করার মতো কোনো সঠিক রেকর্ড নেই' : 'No valid records to import'); return }
     setBusy(true)
     try {
@@ -252,6 +305,8 @@ function ExcelImportModal({ areas, onClose, onDone }: { areas: { id: number; lab
                 <thead><tr className="text-xs text-slate-500 border-b border-slate-100 dark:border-slate-800">
                   <th className="p-2 text-left">SL</th><th className="p-2 text-left">{t('name')}</th>
                   <th className="p-2 text-left">{t('address')}</th><th className="p-2 text-left">{t('mobile')}</th>
+                  <th className="p-2 text-left">{lang === 'bn' ? 'ক্রমিক' : 'Serial'}</th>
+                  <th className="p-2 text-left">{t('area')}</th>
                   <th className="p-2 text-left">{lang === 'bn' ? 'অবস্থা' : 'Status'}</th>
                 </tr></thead>
                 <tbody>
@@ -261,6 +316,8 @@ function ExcelImportModal({ areas, onClose, onDone }: { areas: { id: number; lab
                       <td className="p-2">{r.name || '—'}</td>
                       <td className="p-2 text-xs">{r.address || '—'}</td>
                       <td className="p-2 font-mono text-xs">{r.mobile || '—'}</td>
+                      <td className="p-2 font-mono text-xs">{r.serial ?? '—'}</td>
+                      <td className="p-2 text-xs">{r.areaId ? (areas.find((a: any) => a.id === r.areaId)?.label || r.areaName || '—') : (r.areaName || '—')}</td>
                       <td className="p-2"><span className={`badge ${badge(r.status)}`}>{r.reason || r.status}</span></td>
                     </tr>
                   ))}
@@ -301,7 +358,7 @@ export function CustomerForm({ open, onClose, onSaved, areas, packages, editing 
   open: boolean; onClose: () => void; onSaved: () => void
   areas: { id: number; label: string }[]; packages: { id: number; label: string }[]; editing?: any
 }) {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const toast = useToast()
   const [f, setF] = useState<any>({})
   const [err, setErr] = useState<Record<string, string>>({})
@@ -311,7 +368,7 @@ export function CustomerForm({ open, onClose, onSaved, areas, packages, editing 
     if (!open) return
     setF(editing ? { ...editing } : {
       name: '', father_name: '', mobile: '', address: '', area_id: '', sub_area_id: '', road_id: '',
-      package_id: '', monthly_bill: '', connection_fee: '', connection_date: todayStr(), nid: '', note: '', status: 'active'
+      package_id: '', monthly_bill: '', connection_fee: '', connection_date: todayStr(), nid: '', note: '', status: 'active', customer_serial: ''
     })
     setErr({})
   }, [open, editing])
@@ -362,6 +419,7 @@ export function CustomerForm({ open, onClose, onSaved, areas, packages, editing 
               {areas.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
             </select>
           ))}
+          {field('customer_serial', lang === 'bn' ? 'ক্রমিক (এরিয়া অনুযায়ী)' : 'Serial (per area)', <input type="number" className="input" value={f.customer_serial ?? ''} onChange={(e) => set('customer_serial', e.target.value)} />)}
           {field('note', t('note'), <input className="input" value={f.note || ''} onChange={(e) => set('note', e.target.value)} />)}
         </div>
         <h4 className="text-xs font-semibold text-slate-400 uppercase mt-4 mb-2">{t('connectionInfo')}</h4>

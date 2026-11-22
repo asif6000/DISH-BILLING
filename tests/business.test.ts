@@ -526,6 +526,43 @@ async function main() {
   const billData = await H['reports:customerBill']({ sender: { id: 1 } } as any, c1, month)
   ok('billing report (office/customer copy) carries company info', billData.company.name === 'AVA Test Cable Network' && billData.company.mobile === '01712345678')
 
+  section('area-wise customer serial import')
+  // serials are NOT globally unique — (area_id, serial) is the dedupe key;
+  // the global ID stays the auto-generated AVA-XXXXX code
+  const impSerial = await H['customers:import'](fakeEvent, [
+    { name: 'AreaA S1', mobile: '01611100001', serial: 1, areaName: 'Mirpur' },
+    { name: 'AreaA S2', mobile: '01611100002', serial: 2, areaName: 'Mirpur' },
+    { name: 'AreaB S1', mobile: '01611100011', serial: 1, areaName: 'Uttara' },  // same serial 1, different area → OK
+    { name: 'AreaB S2', mobile: '01611100012', serial: 25, areaName: 'Uttara' }, // serial range differs per area
+    { name: 'AreaA DupS1', mobile: '01611100021', serial: 1, areaName: 'Mirpur' } // duplicate serial in SAME area
+  ] as any)
+  ok('same serial in different areas imports successfully', impSerial.imported === 4 && impSerial.duplicates === 1, impSerial)
+  ok('duplicate serial in same area reported with warning', (impSerial.errors as string[]).some((x) => x.includes('duplicate serial 1 in Mirpur')), impSerial.errors)
+  const serialRows = (await H['customers:list'](fakeEvent, { search: '016111000' })).rows as any[]
+  const areaAS1 = serialRows.find((r) => r.name === 'AreaA S1')
+  const areaBS1 = serialRows.find((r) => r.name === 'AreaB S1')
+  ok('serials stored + area assignment preserved', areaAS1?.customer_serial === 1 && areaAS1?._area === 'Mirpur' && areaBS1?.customer_serial === 1 && areaBS1?._area === 'Uttara', serialRows.map((r) => [r.name, r._area, r.customer_serial]))
+  ok('global customer IDs remain unique codes', new Set(serialRows.map((r) => r.code)).size === serialRows.length)
+  // re-import the same serials → all duplicates (area+serial matches DB)
+  const impSerial2 = await H['customers:import'](fakeEvent, [
+    { name: 'AreaA S1 again', mobile: '01611100099', serial: 1, areaName: 'Mirpur' }
+  ] as any)
+  ok('re-import of same area+serial skipped as duplicate', impSerial2.imported === 0 && impSerial2.duplicates === 1, impSerial2)
+  // serial search: finds serial in every area
+  const serialSearch = (await H['customers:list'](fakeEvent, { search: '25' })).rows as any[]
+  ok('search finds area-wise serial', serialSearch.some((r) => r.name === 'AreaB S2'), serialSearch.map((r) => r.name))
+  // unknown area name in file → invalid with clear message
+  const impBadArea = await H['customers:import'](fakeEvent, [
+    { name: 'Bad Area', mobile: '01611100055', serial: 7, areaName: 'No Such Area' }
+  ] as any)
+  ok('unknown area in Excel reported', impBadArea.invalid === 1 && (impBadArea.errors as string[]).some((x) => x.includes('area not found')), impBadArea)
+  // create/update with serial via the customer form path
+  const serialCustomerId = await H['customers:create'](fakeEvent, { name: 'Form Serial', mobile: '01611100066', area_id: areaId, customer_serial: 15 })
+  const serialGet = (await H['customers:get'](fakeEvent, serialCustomerId)).customer
+  ok('customer form saves area-wise serial', serialGet.customer_serial === 15 && serialGet._area === 'Mirpur')
+  await H['customers:update'](fakeEvent, serialCustomerId, { customer_serial: 16 })
+  ok('customer serial editable', ((await H['customers:get'](fakeEvent, serialCustomerId)).customer).customer_serial === 16)
+
   console.log(`\n=========================\nRESULT: ${pass} passed, ${fail} failed`)
   process.exit(fail > 0 ? 1 : 0)
 }
