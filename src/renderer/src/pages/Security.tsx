@@ -78,7 +78,6 @@ function UsersTab() {
       <ConfirmDialog open={!!deleting} onClose={() => setDeleting(null)}
         onConfirm={() => window.api.users.delete(deleting.id).then(() => { toast.push('success', t('deleted')); load() }).catch((e) => toast.push('error', errMsg(e)))}
         title={t('delete')} message={`${deleting?.username} — ${t('confirmDelete')}`} />
-      <SupabaseUsersCard />
       {permUser && <PermissionModal user={permUser} onClose={() => setPermUser(null)} />}
     </div>
   )
@@ -192,58 +191,6 @@ function PermissionModal({ user, onClose }: any) {
         </div>
       </div>
     </Modal>
-  )
-}
-
-// All users from the Supabase app_users table (pending + approved + rejected)
-function SupabaseUsersCard() {
-  const { t, lang } = useI18n()
-  const [rows, setRows] = useState<any[]>([])
-  const [failed, setFailed] = useState(false)
-  const load = () => window.api.userAccounts.remoteUsers().then((r: any) => { setRows(r || []); setFailed(false) }).catch(() => setFailed(true))
-  useEffect(() => { load() }, [])
-  const badge = (s: string) => s === 'approved' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
-    : s === 'rejected' ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
-    : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
-  return (
-    <div className="card p-4 mt-5">
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="font-semibold text-sm">{lang === 'bn' ? 'Supabase-এর সব ইউজার (Signup list)' : 'All Supabase users (signup list)'}</h3>
-        <button className="btn-secondary btn-sm" onClick={load}>{lang === 'bn' ? 'রিফ্রেশ' : 'Refresh'}</button>
-      </div>
-      {failed ? (
-        <p className="text-sm text-slate-400">{lang === 'bn' ? 'Supabase থেকে লোড করা যায়নি — ইন্টারনেট দেখুন বা SQL (get_app_users) রান করা আছে কিনা দেখুন' : 'Could not load from Supabase — check internet or run the get_app_users SQL'}</p>
-      ) : !rows.length ? (
-        <p className="text-sm text-slate-400">{t('noData')}</p>
-      ) : (
-        <div className="overflow-x-auto max-h-72 overflow-y-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-xs text-slate-500 border-b border-slate-100 dark:border-slate-800">
-                <th className="text-left py-1.5">{t('username')}</th>
-                <th className="text-left py-1.5">{t('name')}</th>
-                <th className="text-left py-1.5">{t('mobile')}</th>
-                <th className="text-left py-1.5">{t('statusCol')}</th>
-                <th className="text-left py-1.5">Role</th>
-                <th className="text-left py-1.5">{t('date')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((u, i) => (
-                <tr key={i} className="border-b border-slate-50 dark:border-slate-800/50">
-                  <td className="py-1.5 font-mono text-xs">{u.username}</td>
-                  <td className="py-1.5">{u.full_name || '-'}</td>
-                  <td className="py-1.5">{u.mobile || '-'}</td>
-                  <td className="py-1.5"><span className={`badge ${badge(u.status)}`}>{u.status}</span></td>
-                  <td className="py-1.5 text-xs">{u.role_name || <span className="text-slate-400">Collector (default)</span>}</td>
-                  <td className="py-1.5 text-xs text-slate-400">{String(u.approved_at || u.created_at || '').slice(0, 16) || '-'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
   )
 }
 
