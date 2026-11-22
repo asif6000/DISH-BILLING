@@ -38,7 +38,7 @@ import SubscriptionRenewalPage from './pages/SubscriptionRenewal'
 import { ImportExportPage } from './pages/ImportExport'
 
 function AppInner() {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const toast = useToast()
   const [user, setUser] = useState<UserInfo | null>(null)
   const [checking, setChecking] = useState(true)
@@ -73,6 +73,14 @@ function AppInner() {
   if (checking) return <div className="h-full flex items-center justify-center text-slate-400">{t('loading')}</div>
   // forced update before anything else (login blocked until installed)
   if (updPending) return <UpdateGate />
+  // silent-failure protection: if the update CHECK itself fails (offline/blocked
+  // GitHub), tell the user on the login screen instead of quietly doing nothing
+  {upd?.state === 'error' && !updPending && !user && (
+    <div className="fixed bottom-3 right-3 z-50 card px-3 py-2 text-xs shadow-lg flex items-center gap-2">
+      <span className="text-amber-600">⚠ {lang === 'bn' ? 'আপডেট চেক ব্যর্থ — ইন্টারনেট দেখুন' : 'Update check failed — check internet'}</span>
+      <button className="btn-secondary btn-sm" onClick={() => window.api.updater.check().catch(() => {})}>{t('retry')}</button>
+    </div>
+  )}
   if (sub?.state === 'expired') return <SubscriptionGate onActivated={refreshSub} />
   if (!user) return <Login onLogin={(u) => { setUser(u); refreshSub() }} />
 

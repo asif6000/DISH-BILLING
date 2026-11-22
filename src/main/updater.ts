@@ -106,11 +106,22 @@ export async function checkForUpdates(manual: boolean): Promise<{ state: string;
     if (manual) throw new Error('UPDATER_UNAVAILABLE')
     return { state: 'unavailable' }
   }
-  autoUpdater.setFeedURL(feed())
+  const f = feed()
+  autoUpdater.setFeedURL(f)
   try {
     await autoUpdater.checkForUpdates()
     return { state: updateStatus.state, info: updateStatus.info }
   } catch (e: any) {
+    // custom update URL failed → try the default GitHub feed once before giving
+    // up, so a stale/incorrect Settings → Auto Update URL can never fully kill
+    // auto-update
+    if (f.provider === 'generic') {
+      try {
+        autoUpdater.setFeedURL({ provider: 'github', owner: GITHUB_OWNER, repo: GITHUB_REPO })
+        await autoUpdater.checkForUpdates()
+        return { state: updateStatus.state, info: updateStatus.info }
+      } catch { /* report the original error below */ }
+    }
     setStatus('error', { message: String(e?.message || e).slice(0, 300) })
     throw e
   }
