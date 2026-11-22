@@ -592,6 +592,70 @@ export const ENTITIES: Record<string, EntityDef> = {
       { name: 'note', label: 'Note', labelBn: 'নোট', type: 'textarea' },
       { name: 'date', label: 'Date', labelBn: 'তারিখ', type: 'date', required: true }
     ]
+  },
+  pppoe_users: {
+    key: 'pppoe_users', table: 'pppoe_users', label: 'PPPoE User', labelBn: 'পিপিপোইউ ইউজার',
+    searchFields: ['username', 'mobile'],
+    defaultSort: 'id desc',
+    fields: [
+      { name: 'username', label: 'Username', labelBn: 'ইউজারনেম', type: 'text', required: true },
+      { name: 'password', label: 'Password', labelBn: 'পাসওয়ার্ড', type: 'text' },
+      { name: 'customer_id', label: 'Customer', labelBn: 'গ্রাহক', type: 'ref', refEntity: 'customers' },
+      { name: 'mobile', label: 'Mobile', labelBn: 'মোবাইল', type: 'text' },
+      {
+        name: 'status', label: 'Status', labelBn: 'স্ট্যাটাস', type: 'select', defaultValue: 'active',
+        options: [
+          { value: 'active', label: 'Active', labelBn: 'এক্টিভ' },
+          { value: 'inactive', label: 'Inactive', labelBn: 'ইনএক্টিভ' }
+        ]
+      },
+      { name: 'notes', label: 'Notes', labelBn: 'নোট', type: 'textarea' }
+    ]
+  },
+  message_requests: {
+    key: 'message_requests', table: 'message_requests', label: 'Message Request', labelBn: 'মেসেজ রিকোয়েস্ট',
+    searchFields: ['note'],
+    defaultSort: 'id desc',
+    fields: [
+      { name: 'reseller_id', label: 'Reseller', labelBn: 'রিসেলার', type: 'ref', refEntity: 'resellers', required: true },
+      { name: 'quantity', label: 'Quantity (SMS)', labelBn: 'পরিমাণ (SMS)', type: 'number', required: true, defaultValue: 0 },
+      { name: 'note', label: 'Note', labelBn: 'নোট', type: 'textarea' },
+      {
+        name: 'status', label: 'Status', labelBn: 'স্ট্যাটাস', type: 'select', defaultValue: 'pending',
+        options: [
+          { value: 'pending', label: 'Pending', labelBn: 'অপেক্ষমাণ' },
+          { value: 'approved', label: 'Approved', labelBn: 'অ্যাপ্রুভড' },
+          { value: 'delivered', label: 'Delivered', labelBn: 'ডেলিভারড' },
+          { value: 'rejected', label: 'Rejected', labelBn: 'বাতিল' }
+        ]
+      }
+    ]
+  },
+  payment_withdraws: {
+    key: 'payment_withdraws', table: 'payment_withdraws', label: 'Payment Withdraw', labelBn: 'পেমেন্ট উইথড্র',
+    searchFields: ['note'],
+    defaultSort: 'id desc',
+    fields: [
+      { name: 'reseller_id', label: 'Reseller', labelBn: 'রিসেলার', type: 'ref', refEntity: 'resellers', required: true },
+      { name: 'amount', label: 'Amount', labelBn: 'পরিমাণ', type: 'number', required: true, defaultValue: 0 },
+      {
+        name: 'method', label: 'Method', labelBn: 'মাধ্যম', type: 'select', defaultValue: 'bkash',
+        options: [
+          { value: 'bkash', label: 'bKash', labelBn: 'বিকাশ' },
+          { value: 'nagad', label: 'Nagad', labelBn: 'নগদ' },
+          { value: 'cash', label: 'Cash', labelBn: 'ক্যাশ' }
+        ]
+      },
+      { name: 'note', label: 'Note', labelBn: 'নোট', type: 'textarea' },
+      {
+        name: 'status', label: 'Status', labelBn: 'স্ট্যাটাস', type: 'select', defaultValue: 'pending',
+        options: [
+          { value: 'pending', label: 'Pending', labelBn: 'অপেক্ষমাণ' },
+          { value: 'paid', label: 'Paid', labelBn: 'পরিশোধিত' },
+          { value: 'rejected', label: 'Rejected', labelBn: 'বাতিল' }
+        ]
+      }
+    ]
   }
 }
 

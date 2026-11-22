@@ -1,6 +1,7 @@
 import { ipcMain } from 'electron'
 import { getDb, round2 } from '../db'
 import { requirePermission } from './auth'
+import { getSetting } from '../db'
 
 export function registerReportIpc(): void {
   // Area-wise collection
@@ -113,5 +114,80 @@ export function registerReportIpc(): void {
     const payments = db.prepare('SELECT receipt_no, amount, method, payment_date, type FROM payments WHERE customer_id = ? ORDER BY payment_date').all(customerId)
     const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(customerId)
     return { bills, payments, customer }
+  })
+
+  // ---------- Two-copy A4 bill report ----------
+  // Per-customer billing figures for one month (READ-ONLY, used for reports & printing)
+  ipcMain.handle('reports:billList', (e, month: string, filters: any = {}) => {
+    requirePermission(e, 'reports')
+    const db = getDb()
+    // month range: filters.from..filters.to (YYYY-MM) — defaults to the single `month`
+    // (same billing calculation logic as the Billing Report, generalized to a range)
+    const from = String(filters.from || month || '')
+    const to = String(filters.to || filters.from || month || '')
+    const hasCollector = filters.collectorId ? Number(filters.collectorId) : 0
+    const collectorClause = hasCollector
+      ? ` AND EXISTS (SELECT 1 FROM payments pay WHERE pay.customer_id = c.id AND substr(pay.payment_date,1,7) BETWEEN '${from}' AND '${to}' AND pay.collector_id = ${hasCollector})`
+      : ''
+    const rows = db.prepare(`SELECT c.id, c.code, c.name, c.mobile, c.address, a.name AS area, c.monthly_bill,
+        COALESCE((SELECT SUM(b.amount) FROM bills b WHERE b.customer_id = c.id AND b.month >= ? AND b.month <= ? AND b.status != 'cancelled'),0) AS month_bill,
+        COALESCE((SELECT SUM(b.late_fee) FROM bills b WHERE b.customer_id = c.id AND b.month >= ? AND b.month <= ? AND b.status != 'cancelled'),0) AS additional,
+        COALESCE((SELECT SUM(b.discount) FROM bills b WHERE b.customer_id = c.id AND b.month >= ? AND b.month <= ? AND b.status != 'cancelled'),0) AS discount,
+        COALESCE((SELECT SUM(b.total - b.paid) FROM bills b WHERE b.customer_id = c.id AND b.month < ? AND b.status != 'cancelled'),0) AS prev_due,
+        COALESCE((SELECT SUM(b.paid) FROM bills b WHERE b.customer_id = c.id AND b.month >= ? AND b.month <= ? AND b.status != 'cancelled'),0) AS paid
+      FROM customers c LEFT JOIN areas a ON a.id = c.area_id
+      WHERE c.status = 'active' ${filters.areaId ? 'AND c.area_id = ' + Number(filters.areaId) : ''}${collectorClause}
+      ORDER BY c.code`).all(from, to, from, to, from, to, from, from, to) as any[]
+    let list = rows.map((r) => {
+      const totalPayable = round2(r.prev_due + r.month_bill + r.additional - r.discount)
+      const currentDue = round2(totalPayable - r.paid)
+      return { ...r, totalPayable, currentDue, status: currentDue <= 0 ? 'paid' : r.paid > 0 ? 'partial' : 'due' }
+    })
+    if (filters.q) {
+      const q = String(filters.q).toLowerCase()
+      list = list.filter((r) => String(r.code).toLowerCase().includes(q) || String(r.name).toLowerCase().includes(q) || String(r.mobile || '').includes(filters.q))
+    }
+    if (filters.status && filters.status !== 'all') list = list.filter((r) => r.status === filters.status)
+    return list
+  })
+
+  // Full bill data for one customer + month (READ-ONLY, for printing both copies)
+  ipcMain.handle('reports:customerBill', (e, customerId: number, month: string) => {
+    requirePermission(e, 'reports')
+    const db = getDb()
+    const customer = db.prepare(`SELECT c.*, a.name AS area_name, p.name AS package_name FROM customers c
+      LEFT JOIN areas a ON a.id = c.area_id LEFT JOIN packages p ON p.id = c.package_id WHERE c.id = ?`).get(customerId) as any
+    if (!customer) throw new Error('NOT_FOUND')
+    const agg = db.prepare(`SELECT COALESCE(SUM(amount),0) AS month_bill, COALESCE(SUM(late_fee),0) AS additional,
+        COALESCE(SUM(discount),0) AS discount, COALESCE(SUM(paid),0) AS paid
+      FROM bills WHERE customer_id = ? AND month = ? AND status != 'cancelled'`).get(customerId, month) as any
+    const prevDueRow = db.prepare(`SELECT COALESCE(SUM(total - paid),0) AS v FROM bills
+      WHERE customer_id = ? AND month < ? AND status != 'cancelled'`).get(customerId, month) as any
+    const figures = {
+      monthBill: round2(agg.month_bill), additional: round2(agg.additional), discount: round2(agg.discount),
+      prevDue: round2(prevDueRow.v), paid: round2(agg.paid)
+    }
+    const totalPayable = round2(figures.prevDue + figures.monthBill + figures.additional - figures.discount)
+    const currentDue = round2(totalPayable - figures.paid)
+    const payments = db.prepare(`SELECT p.receipt_no, p.amount, p.method, p.reference, p.payment_date, p.created_at, p.created_by,
+        COALESCE(s.name, p.created_by) AS collected_by
+      FROM payments p LEFT JOIN collectors col ON col.id = p.collector_id LEFT JOIN staff s ON s.id = col.staff_id
+      WHERE p.customer_id = ? AND (p.bill_id IN (SELECT id FROM bills WHERE customer_id = ? AND month = ?)
+        OR (p.bill_id IS NULL AND p.type = 'bill' AND p.payment_date LIKE ? || '%'))
+      ORDER BY p.payment_date, p.id`).all(customerId, customerId, month, month)
+    const company = {
+      name: getSetting('company_name', 'AVA Cable Network'),
+      name_bn: getSetting('company_name_bn', ''),
+      address: getSetting('company_address', ''),
+      mobile: getSetting('company_mobile', ''),
+      mobile_alt: getSetting('company_mobile_alt', ''),
+      email: getSetting('company_email', ''),
+      logo: getSetting('company_logo', ''),
+      sms: getSetting('company_sms', getSetting('company_mobile', '')),
+      license: getSetting('company_license', ''),
+      footer: getSetting('bill_footer', ''),
+      authorized: getSetting('company_authorized', '')
+    }
+    return { customer, month, figures: { ...figures, totalPayable, currentDue, status: currentDue <= 0 ? 'paid' : figures.paid > 0 ? 'partial' : 'due' }, payments, company }
   })
 }

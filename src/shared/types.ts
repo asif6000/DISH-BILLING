@@ -23,6 +23,7 @@ export interface UserInfo {
   roleId: number
   roleName: string
   permissions: string[]
+  permissionMode?: string
 }
 
 export interface CustomerFilters extends ListParams {

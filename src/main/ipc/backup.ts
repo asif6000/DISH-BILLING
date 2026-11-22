@@ -43,7 +43,8 @@ function pruneBackups(dir: string, keep: number): void {
 
 export function registerBackupIpc(): void {
   ipcMain.handle('backup:create', async (e, targetPath?: string) => {
-    const s = requirePermission(e, 'security')
+    // mutating backup operations need security.manage; viewing needs only view
+    const s = requirePermission(e, 'security', 'manage')
     let target = targetPath
     if (!target) {
       const win = require('electron').BrowserWindow.fromWebContents(e.sender)
@@ -61,7 +62,7 @@ export function registerBackupIpc(): void {
   })
 
   ipcMain.handle('backup:restore', async (e, sourcePath?: string) => {
-    const s = requirePermission(e, 'security')
+    const s = requirePermission(e, 'security', 'manage')
     let source = sourcePath
     if (!source) {
       const win = require('electron').BrowserWindow.fromWebContents(e.sender)
@@ -90,7 +91,7 @@ export function registerBackupIpc(): void {
   })
 
   ipcMain.handle('backup:list', (e) => {
-    requirePermission(e, 'security')
+    requirePermission(e, 'security', 'view')
     const dir = ensureBackupsDir()
     return fs.readdirSync(dir)
       .filter((f) => f.endsWith('.db'))
@@ -102,7 +103,7 @@ export function registerBackupIpc(): void {
   })
 
   ipcMain.handle('backup:integrity', (e) => {
-    requirePermission(e, 'security')
+    requirePermission(e, 'security', 'view')
     return integrityCheck()
   })
 

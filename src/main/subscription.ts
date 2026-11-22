@@ -7,7 +7,8 @@
 //   (scripts/gen-sub-code.js). A valid code extends the subscription by 1 year.
 import { ipcMain } from 'electron'
 import { createHash, randomUUID } from 'crypto'
-import { getSetting, setSetting, logActivity } from './db'
+import { getSetting, setSetting, logActivity, getDb } from './db'
+import { getSession } from './ipc/auth'
 
 // ---- Supabase (baked-in defaults; settings keys supabase_url / supabase_anon_key can override) ----
 const DEFAULT_SUPABASE_URL = 'https://ttmjcjvthrnzyiifdqht.supabase.co'
@@ -19,7 +20,9 @@ export const SUB_BKASH = '01331707900'
 export const SUB_NAGAD = '01616595386'
 
 const CODE_SECRET = 'AVA-Cable-Sub-2025#x9K' // keep in sync with scripts/gen-sub-code.js
-const TRIAL_DAYS = 30
+// Free trial: 7 days — from first run, and re-granted (max, never shortened)
+// every time an account is approved via Supabase.
+const TRIAL_DAYS = 7
 const YEAR_DAYS = 365
 const EXPIRING_SOON_DAYS = 7
 
@@ -72,6 +75,56 @@ export function isSubscriptionExpired(): boolean {
   return getSubState().state === 'expired'
 }
 
+// Call when a signup account is approved: the approved USER gets a 7-day trial
+// from the approval date and the installation's global expiry is extended to at
+// least that (never shortening a purchased subscription).
+export function grantApprovalTrial(): void {
+  const end = addDays(localDate(), TRIAL_DAYS)
+  const cur = getSubState()
+  if (end > cur.expire) {
+    setSetting('sub_expire', end)
+    logActivity(null, null, 'trial_granted', 'settings', 'new expiry: ' + end)
+  }
+}
+
+// ---- per-user trial ----
+// A user's own trial_ends is THE authority: each account gets 7 free days from
+// creation/approval, then the payment gate blocks until a purchase. Buying
+// (activation code or remote approval) extends the whole installation and
+// re-dates every user's trial to the paid expiry (syncUsersToSubExpire).
+// NULL trial_ends (fresh-install admin) → the global 7-day first-run trial.
+function trialIso(te: string | null | undefined): string {
+  if (!te) return ''
+  return te.includes(' ') ? te.replace(' ', 'T') : te + 'T23:59:59'
+}
+
+export function isUserBlocked(userId: number): boolean {
+  let trialEnds: string | null = null
+  try {
+    const row = getDb().prepare('SELECT trial_ends FROM users WHERE id = ?').get(userId) as any
+    trialEnds = row?.trial_ends ?? null
+  } catch { /* db not ready — global rule only */ }
+  if (trialEnds) return Date.now() > new Date(trialIso(trialEnds)).getTime()
+  return isSubscriptionExpired()
+}
+
+// SubState adjusted for the logged-in user — drives the renderer payment gate
+export function getSubStateFor(trialEnds: string | null): SubState {
+  if (!trialEnds) return getSubState()
+  const t = trialIso(trialEnds)
+  const daysLeft = Math.ceil((new Date(t).getTime() - Date.now()) / 86_400_000)
+  const state: SubState['state'] = daysLeft <= 0 ? 'expired' : daysLeft <= EXPIRING_SOON_DAYS ? 'expiring' : 'active'
+  return { ...getSubState(), expire: t.slice(0, 10), daysLeft, state }
+}
+
+// After a purchase, every user of this installation is covered until the paid
+// expiry (their per-user trial is re-dated to it).
+export function syncUsersToSubExpire(expire: string): void {
+  try {
+    getDb().prepare('UPDATE users SET trial_ends = ?').run(expire)
+  } catch { /* non-fatal */ }
+}
+
 function activate(rawCode: string): SubState {
   const code = String(rawCode || '').trim().toUpperCase()
   const now = new Date()
@@ -80,16 +133,27 @@ function activate(rawCode: string): SubState {
   const cur = getSubState()
   // extend 1 year from the later of (today, current expiry) — renewing early never loses days
   const base = cur.expire > localDate() ? cur.expire : localDate()
-  setSetting('sub_expire', addDays(base, YEAR_DAYS))
-  logActivity(null, null, 'subscription_activate', 'settings', 'new expiry: ' + addDays(base, YEAR_DAYS))
+  const newExp = addDays(base, YEAR_DAYS)
+  setSetting('sub_expire', newExp)
+  // the purchase covers every user of this installation
+  syncUsersToSubExpire(newExp)
+  logActivity(null, null, 'subscription_activate', 'settings', 'new expiry: ' + newExp)
   return getSubState()
 }
 
 export function registerSubscriptionIpc(): void {
   // No auth required: the gate is shown before login when expired.
-  ipcMain.handle('sub:status', () => {
+  ipcMain.handle('sub:status', (e) => {
     // fire-and-forget remote approval check (keeps local state fresh)
     checkRemoteApproval().catch(() => {})
+    // per-user trial: the logged-in user's own trial end may block sooner
+    try {
+      const s = getSession(e)
+      if (s) {
+        const row = getDb().prepare('SELECT trial_ends FROM users WHERE id = ?').get(s.userId) as any
+        return getSubStateFor(row?.trial_ends ?? null)
+      }
+    } catch { /* fall back to global state */ }
     return getSubState()
   })
   ipcMain.handle('sub:activate', (_e, code: string) => activate(code))
@@ -187,6 +251,7 @@ export async function checkRemoteApproval(): Promise<SubState> {
       const cur = getSubState()
       if (remote > cur.expire) {
         setSetting('sub_expire', remote)
+        syncUsersToSubExpire(remote)
         logActivity(null, null, 'subscription_approved_remote', 'settings', 'new expiry: ' + remote)
       }
     }

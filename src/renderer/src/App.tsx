@@ -7,12 +7,15 @@ import Login from './pages/Login'
 import SubscriptionGate from './pages/SubscriptionGate'
 import UpdateGate from './pages/UpdateGate'
 import Dashboard from './pages/Dashboard'
+import SupportNumbers from './pages/SupportNumbers'
+import Tutorial from './pages/Tutorial'
 import CustomersPage from './pages/Customers'
 import CustomerProfile from './pages/CustomerProfile'
 import BillingPage from './pages/Billing'
 import CollectPayment from './pages/CollectPayment'
-import PaymentsHistory from './pages/PaymentsHistory'
+import PaymentsHistory, { CollectionHistory } from './pages/PaymentsHistory'
 import ReportsPage from './pages/Reports'
+import BillReport from './pages/BillReport'
 import CashbookPage from './pages/Cashbook'
 import SettingsPage from './pages/Settings'
 import SecurityPage from './pages/Security'
@@ -20,6 +23,7 @@ import AutomationPage from './pages/Automation'
 import { EntityPage } from './components/EntityPage'
 import { UserInfo } from '@shared/types'
 import { errMsg } from './lib/api'
+import { PermProvider } from './lib/perms'
 import { monthStartEnd, thisMonth, prevMonth } from './lib/format'
 import { AreasCollection } from './pages/Reports'
 import { ConnectionsPage } from './pages/Connections'
@@ -53,11 +57,16 @@ function AppInner() {
       setUser(null)
       toast.push('error', t('sessionExpired'))
     })
+    // live permission sync: Security → Roles / per-user grants push an event,
+    // re-check the session so updated permissions apply WITHOUT logout/login
+    const offPerms = window.api.auth.onPermissionsUpdated(() => {
+      window.api.auth.check().then((r: any) => { if (r?.user) setUser(r.user) }).catch(() => {})
+    })
     // session keepalive ping every 2 min
     const ping = setInterval(() => window.api.auth.ping().catch(() => {}), 120_000)
     // re-check subscription every 30 min (handles expiry while app is open)
     const subPing = setInterval(refreshSub, 30 * 60_000)
-    return () => { off(); offUpd(); clearInterval(ping); clearInterval(subPing) }
+    return () => { off(); offUpd(); offPerms(); clearInterval(ping); clearInterval(subPing) }
   }, [])
 
   const updPending = upd && ['available', 'downloading', 'downloaded'].includes(upd.state)
@@ -66,15 +75,23 @@ function AppInner() {
   // forced update before anything else (login blocked until installed)
   if (updPending) return <UpdateGate />
   if (sub?.state === 'expired') return <SubscriptionGate onActivated={refreshSub} />
-  if (!user) return <Login onLogin={setUser} />
+  if (!user) return <Login onLogin={(u) => { setUser(u); refreshSub() }} />
 
   const E = (entity: string, titleKey: string, props?: any) => <EntityPage entity={entity} title={t(titleKey)} {...props} />
 
   return (
+    <PermProvider user={user}>
     <HashRouter>
       <Routes>
         <Route element={<Layout user={user} onLogout={() => window.api.auth.logout().then(() => setUser(null))} />}>
           <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/pppoe" element={E('pppoe_users', 'm_pppoe')} />
+          <Route path="/pppoe/active" element={<EntityPage entity="pppoe_users" title={t('m_pppoe_active')} fixedFilters={{ status: 'active' }} />} />
+          <Route path="/cashier" element={<CashbookPage />} />
+          <Route path="/message-request" element={E('message_requests', 'm_msg_request')} />
+          <Route path="/payment-withdraw" element={E('payment_withdraws', 'm_payment_withdraw')} />
+          <Route path="/support-numbers" element={<SupportNumbers />} />
+          <Route path="/tutorial" element={<Tutorial />} />
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
 
           {/* Areas */}
@@ -112,6 +129,7 @@ function AppInner() {
           <Route path="/payments/collect" element={<CollectPayment />} />
           <Route path="/payments/renewal" element={<RenewalsPage />} />
           <Route path="/payments" element={<PaymentsHistory />} />
+          <Route path="/payments/history" element={<CollectionHistory />} />
           <Route path="/payments/daily" element={<DailyPaymentsPage />} />
           <Route path="/payments/refund" element={<CollectPayment mode="refund" />} />
 
@@ -163,6 +181,7 @@ function AppInner() {
 
           {/* Reports / Marketing / Automation / Branches / Security */}
           <Route path="/reports" element={<ReportsPage />} />
+          <Route path="/reports/bills" element={<BillReport />} />
           <Route path="/leads" element={E('leads', 'marketing_leads')} />
           <Route path="/followups" element={E('followups', 'marketing_followup')} />
           <Route path="/automation" element={<AutomationPage />} />
@@ -179,6 +198,7 @@ function AppInner() {
         </Route>
       </Routes>
     </HashRouter>
+    </PermProvider>
   )
 }
 

@@ -22,6 +22,15 @@ export function prevMonth(ym: string): string {
   return d.toISOString().slice(0, 7)
 }
 
+const BN_MONTHS = ['জানুয়ারি', 'ফেব্রুয়ারি', 'মার্চ', 'এপ্রিল', 'মে', 'জুন', 'জুলাই', 'আগস্ট', 'সেপ্টেম্বর', 'অক্টোবর', 'নভেম্বর', 'ডিসেম্বর']
+const EN_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+
+export function monthLabel(ym: string, bn = true): string {
+  const [y, m] = ym.split('-').map(Number)
+  const names = bn ? BN_MONTHS : EN_MONTHS
+  return `${names[(m || 1) - 1] || ''} ${y}`
+}
+
 export function monthStartEnd(ym: string): { from: string; to: string } {
   const [y, m] = ym.split('-').map(Number)
   const from = new Date(y, m - 1, 1).toISOString().slice(0, 10)

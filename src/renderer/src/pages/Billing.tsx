@@ -1,16 +1,18 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { Zap, Printer, Pencil, XCircle, Banknote } from 'lucide-react'
-import { useSearchParams } from 'react-router-dom'
+import { Zap, Printer, Pencil, XCircle, Banknote, Smartphone, Building, RefreshCw } from 'lucide-react'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import { useI18n, monthLabel } from '../lib/i18n'
 import { DataTable, Column } from '../components/DataTable'
 import { Modal, ConfirmDialog, StatusBadge, useToast, PageHeader, useReflist } from '../components/ui'
-import { money, thisMonth, prevMonth } from '../lib/format'
+import { CollectorPicker } from '../components/CollectorPicker'
+import { money, thisMonth, prevMonth, todayStr } from '../lib/format'
 import { errMsg } from '../lib/api'
-import { invoiceHTML } from '../lib/printDocs'
+import { invoiceHTML, receiptHTML } from '../lib/printDocs'
 
 export default function BillingPage({ mode }: { mode?: 'generate' | 'history' }) {
   const { t, lang } = useI18n()
   const toast = useToast()
+  const nav = useNavigate()
   const [params, setParams] = useSearchParams()
   const [month, setMonth] = useState(params.get('month') || thisMonth())
   const statusParam = params.get('status') || ''
@@ -23,6 +25,7 @@ export default function BillingPage({ mode }: { mode?: 'generate' | 'history' })
   const [genOpen, setGenOpen] = useState(!!mode)
   const [adjusting, setAdjusting] = useState<any>(null)
   const [cancelling, setCancelling] = useState<any>(null)
+  const [collecting, setCollecting] = useState<any>(null)
   const areas = useReflist('areas')
 
   const load = useCallback(() => {
@@ -103,6 +106,9 @@ export default function BillingPage({ mode }: { mode?: 'generate' | 'history' })
         exportName={`bills-${month}`}
         actions={(r) => (
           <div className="flex justify-end gap-1">
+            {r.status !== 'cancelled' && (Number(r.total) || 0) - (Number(r.paid) || 0) > 0 && (
+              <button className="btn-success btn-sm" title={t('collectNow')} onClick={() => setCollecting(r)}><Banknote size={13} /> {t('collection')}</button>
+            )}
             <button className="btn-secondary btn-sm text-emerald-600" title={t('print')} onClick={() => printInvoice(r.id)}><Printer size={13} /></button>
             <button className="btn-secondary btn-sm" title={t('billing_adjust')} onClick={() => setAdjusting(r)}><Pencil size={13} /></button>
             {r.paid == 0 && r.status !== 'cancelled' && (
@@ -114,6 +120,7 @@ export default function BillingPage({ mode }: { mode?: 'generate' | 'history' })
 
       <GenerateModal open={genOpen} onClose={() => setGenOpen(false)} onGenerate={generate} areas={areas} />
       {adjusting && <AdjustModal bill={adjusting} onClose={() => setAdjusting(null)} onSaved={() => { setAdjusting(null); load() }} />}
+      {collecting && <BillCollectModal bill={collecting} onClose={() => setCollecting(null)} onSaved={() => { setCollecting(null); load() }} />}
       <ConfirmDialog
         open={!!cancelling}
         onClose={() => setCancelling(null)}
@@ -186,6 +193,102 @@ function AdjustModal({ bill, onClose, onSaved }: { bill: any; onClose: () => voi
       <div className="flex justify-end gap-2 mt-4">
         <button className="btn-secondary" onClick={onClose}>{t('cancel')}</button>
         <button className="btn-primary" onClick={save}>{t('save')}</button>
+      </div>
+    </Modal>
+  )
+}
+
+// Collect money against a specific bill — Cash / bKash / Nagad / Rocket / Bank
+function BillCollectModal({ bill, onClose, onSaved }: { bill: any; onClose: () => void; onSaved: () => void }) {
+  const { t, lang } = useI18n()
+  const toast = useToast()
+  const nav = useNavigate()
+  const due = Math.max(0, (Number(bill.total) || 0) - (Number(bill.paid) || 0))
+  const [f, setF] = useState<any>({ amount: String(due), method: 'cash', reference: '', note: '', date: todayStr(), collectorId: '' })
+  const [busy, setBusy] = useState(false)
+  const set = (k: string, v: any) => setF((x: any) => ({ ...x, [k]: v }))
+
+  const methods = [
+    { value: 'cash', label: t('cash'), icon: Banknote, color: 'text-emerald-600' },
+    { value: 'bkash', label: t('bkash'), icon: Smartphone, color: 'text-pink-600' },
+    { value: 'nagad', label: t('nagad'), icon: Smartphone, color: 'text-orange-600' },
+    { value: 'rocket', label: t('rocket'), icon: Smartphone, color: 'text-purple-600' },
+    { value: 'bank', label: t('bank'), icon: Building, color: 'text-blue-600' }
+  ]
+
+  const submit = async () => {
+    const amt = Number(f.amount)
+    if (!amt || amt <= 0) { toast.push('error', lang === 'bn' ? 'সঠিক পরিমাণ দিন' : 'Enter a valid amount'); return }
+    setBusy(true)
+    try {
+      const result: any = await window.api.payments.collect({
+        customerId: bill.customer_id, amount: amt, method: f.method, reference: f.reference,
+        note: f.note, date: f.date, type: 'bill', collectorId: f.collectorId || null
+      })
+      try {
+        const list = await window.api.payments.list({ page: 1, pageSize: 1, search: result.receiptNo })
+        if (list.rows?.[0]) {
+          const d = await window.api.payments.receipt(list.rows[0].id)
+          await window.api.print.preview(receiptHTML(d.payment, d.customer, d.company), t('receipt') + ' ' + result.receiptNo)
+        }
+      } catch { /* receipt preview optional */ }
+      toast.push('success', `${t('receipt')}: ${result.receiptNo}`)
+      onSaved()
+    } catch (e) {
+      toast.push('error', errMsg(e))
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <Modal open onClose={onClose} title={`${t('collection')} — ${bill.invoice_no}`}>
+      {/* bill summary */}
+      <div className="mb-3 p-3 rounded-lg bg-slate-50 dark:bg-slate-800 text-sm">
+        <b>{bill.customer_name}</b> <span className="font-mono text-xs text-slate-400">{bill.customer_code}</span>
+        <div className="text-xs text-slate-500 mt-0.5">{bill.month} · {t('netTotal')}: ৳{money(bill.total)} · {t('paid')}: ৳{money(bill.paid)} · <span className="text-red-500">{t('due')}: ৳{money(due)}</span></div>
+      </div>
+
+      {/* method buttons — bKash / Nagad / Cash big */}
+      <label className="label">{t('method')}</label>
+      <div className="grid grid-cols-3 gap-2 mb-1">
+        {methods.slice(0, 3).map((m) => (
+          <button key={m.value} onClick={() => set('method', m.value)}
+            className={`flex flex-col items-center gap-1 py-3 rounded-xl border-2 text-xs font-semibold transition ${f.method === m.value ? 'border-brand-600 bg-brand-600 text-white shadow-md' : 'border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
+            <m.icon size={20} className={f.method === m.value ? '' : m.color} />
+            {m.label}
+          </button>
+        ))}
+      </div>
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        {methods.slice(3).map((m) => (
+          <button key={m.value} onClick={() => set('method', m.value)}
+            className={`flex items-center justify-center gap-1.5 py-2 rounded-lg border text-xs transition ${f.method === m.value ? 'border-brand-600 bg-brand-600 text-white' : 'border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
+            <m.icon size={13} /> {m.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="label">{t('amount')} <span className="text-red-500">*</span></label>
+          <div className="flex gap-1">
+            <input type="number" min="0" step="0.01" className="input" value={f.amount} onChange={(e) => set('amount', e.target.value)} />
+            {f.amount !== String(due) && (
+              <button className="btn-secondary btn-sm whitespace-nowrap" onClick={() => set('amount', String(due))}>{t('total')} ৳{money(due)}</button>
+            )}
+          </div>
+        </div>
+        <div><label className="label">{t('date')}</label><input type="date" className="input" value={f.date} onChange={(e) => set('date', e.target.value)} /></div>
+        <div><label className="label">TrxID / {t('reference')}</label><input className="input" placeholder="TrxID" value={f.reference} onChange={(e) => set('reference', e.target.value)} /></div>
+        <div>
+          <CollectorPicker value={f.collectorId} onChange={(v) => set('collectorId', v)} />
+        </div>
+        <div className="col-span-2"><label className="label">{t('note')}</label><input className="input" value={f.note} onChange={(e) => set('note', e.target.value)} /></div>
+      </div>
+      <div className="flex justify-end gap-2 mt-4">
+        <button className="btn-secondary" onClick={onClose}>{t('cancel')}</button>
+        <button className="btn-primary" onClick={submit} disabled={busy}>
+          <RefreshCw size={15} /> {busy ? t('loading') : t('collectNow')}
+        </button>
       </div>
     </Modal>
   )

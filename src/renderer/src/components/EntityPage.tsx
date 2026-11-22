@@ -6,6 +6,7 @@ import { DataTable, Column } from './DataTable'
 import { Modal, ConfirmDialog, StatusBadge, useToast, useReflist, PageHeader } from './ui'
 import { money, dateFmt } from '../lib/format'
 import { errMsg } from '../lib/api'
+import { useCan } from '../lib/perms'
 
 export interface EntityPageProps {
   entity: string
@@ -32,6 +33,12 @@ export function EntityPage({ entity, title, subtitle, fixedFilters, extraColumns
   const [editing, setEditing] = useState<any>(null)
   const [deleting, setDeleting] = useState<any>(null)
   const [tick, setTick] = useState(0)
+  // action buttons follow the exact permission rule the backend enforces:
+  // View → list visible, Create → Add, Edit → Edit/Save, Delete → Delete
+  const can = useCan()
+  const canCreate = can(entity, 'create')
+  const canEdit = can(entity, 'edit')
+  const canDelete = can(entity, 'delete')
 
   const refresh = useCallback(() => setTick((x) => x + 1), [])
 
@@ -76,7 +83,7 @@ export function EntityPage({ entity, title, subtitle, fixedFilters, extraColumns
         actions={
           <>
             {toolbar}
-            <button className="btn-primary" onClick={() => { setEditing(null); setFormOpen(true) }}><Plus size={16} /> {t('add')}</button>
+            {canCreate && <button className="btn-primary" onClick={() => { setEditing(null); setFormOpen(true) }}><Plus size={16} /> {t('add')}</button>}
           </>
         }
       />
@@ -94,8 +101,8 @@ export function EntityPage({ entity, title, subtitle, fixedFilters, extraColumns
         actions={(row) => (
           <div className="flex justify-end gap-1">
             {rowActions?.(row, refresh)}
-            <button className="btn-secondary btn-sm" title={t('edit')} onClick={() => { setEditing(row); setFormOpen(true) }}><Pencil size={13} /></button>
-            <button className="btn-secondary btn-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30" title={t('delete')} onClick={() => setDeleting(row)}><Trash2 size={13} /></button>
+            {canEdit && <button className="btn-secondary btn-sm" title={t('edit')} onClick={() => { setEditing(row); setFormOpen(true) }}><Pencil size={13} /></button>}
+            {canDelete && <button className="btn-secondary btn-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30" title={t('delete')} onClick={() => setDeleting(row)}><Trash2 size={13} /></button>}
           </div>
         )}
       />

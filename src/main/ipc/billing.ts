@@ -12,7 +12,7 @@ function customerDueBefore(db: any, customerId: number, month: string): number {
 export function registerBillingIpc(): void {
   // Generate monthly bills (idempotent per customer per month)
   ipcMain.handle('billing:generate', (e, month: string, areaId?: number, generatedBy = 'manual') => {
-    const s = requirePermission(e, 'billing')
+    const s = requirePermission(e, 'billing', 'create')
     if (!/^\d{4}-\d{2}$/.test(month)) throw new Error('INVALID_MONTH')
     const db = getDb()
     const lateFee = Number(getSetting('late_fee', '0')) || 0
@@ -47,7 +47,7 @@ export function registerBillingIpc(): void {
   })
 
   ipcMain.handle('billing:list', (e, params: ListParams & { month?: string; status?: string; areaId?: number }) => {
-    requirePermission(e, 'billing')
+    requirePermission(e, 'billing', 'view')
     const db = getDb()
     const page = Math.max(1, params.page || 1)
     const pageSize = params.all ? 100000 : Math.min(200, Math.max(5, params.pageSize || 20))
@@ -73,7 +73,7 @@ export function registerBillingIpc(): void {
 
   // adjust a bill (discount / late fee) — recalculates total
   ipcMain.handle('billing:adjust', (e, billId: number, discount: number, lateFee: number, reason: string) => {
-    const s = requirePermission(e, 'billing')
+    const s = requirePermission(e, 'billing', 'edit')
     const db = getDb()
     const bill = db.prepare('SELECT * FROM bills WHERE id = ?').get(billId) as any
     if (!bill) throw new Error('NOT_FOUND')
@@ -92,7 +92,7 @@ export function registerBillingIpc(): void {
   })
 
   ipcMain.handle('billing:cancel', (e, billId: number) => {
-    const s = requirePermission(e, 'billing')
+    const s = requirePermission(e, 'billing', 'delete')
     const db = getDb()
     const bill = db.prepare('SELECT * FROM bills WHERE id = ?').get(billId) as any
     if (!bill) throw new Error('NOT_FOUND')
@@ -104,7 +104,7 @@ export function registerBillingIpc(): void {
 
   // full invoice data for printing
   ipcMain.handle('billing:invoice', (e, billId: number) => {
-    requirePermission(e, 'billing')
+    requirePermission(e, 'billing', 'view')
     const db = getDb()
     const bill = db.prepare('SELECT * FROM bills WHERE id = ?').get(billId) as any
     if (!bill) throw new Error('NOT_FOUND')
@@ -116,6 +116,9 @@ export function registerBillingIpc(): void {
       name_bn: getSetting('company_name_bn', ''),
       address: getSetting('company_address', ''),
       mobile: getSetting('company_mobile', ''),
+      mobile_alt: getSetting('company_mobile_alt', ''),
+      email: getSetting('company_email', ''),
+      logo: getSetting('company_logo', ''),
       footer: getSetting('bill_footer', '')
     }
     return { bill, customer, payments, company }

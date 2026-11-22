@@ -1,4 +1,5 @@
-import { BrowserWindow, ipcMain, app } from 'electron'
+import { BrowserWindow, ipcMain, app, dialog } from 'electron'
+import fs from 'fs'
 
 const printWindows = new Set<BrowserWindow>()
 
@@ -58,6 +59,29 @@ export function registerPrintIpc(): void {
         resolve(ok)
       })
     })
+  })
+
+  // Save an HTML document as A4 PDF via native save dialog; returns file path or null
+  ipcMain.handle('print:pdf', async (e, html: string, defaultName = 'document.pdf') => {
+    const win = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, nodeIntegration: false } })
+    printWindows.add(win)
+    try {
+      await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+      const buf = await win.webContents.printToPDF({
+        pageSize: 'A4', printBackground: true,
+        margins: { top: 0.4, bottom: 0.4, left: 0.4, right: 0.4 }
+      })
+      const { canceled, filePath } = await dialog.showSaveDialog({
+        title: 'Save PDF', defaultPath: defaultName,
+        filters: [{ name: 'PDF', extensions: ['pdf'] }]
+      })
+      if (canceled || !filePath) return null
+      await fs.promises.writeFile(filePath, buf)
+      return filePath
+    } finally {
+      try { win.destroy() } catch { /* ignore */ }
+      printWindows.delete(win)
+    }
   })
 
   ipcMain.handle('print:getPrinters', (e) => {

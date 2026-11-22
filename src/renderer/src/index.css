@@ -24,3 +24,19 @@ input, select, textarea, button { outline: none; }
   .table-td { @apply px-3 py-2.5 text-sm border-t border-slate-100 dark:border-slate-800; }
   .badge { @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium; }
 }
+
+/* ---------- A4 print (reports) ---------- */
+@media screen {
+  .print-area { display: none; }
+}
+@media print {
+  @page { size: A4 portrait; margin: 12mm; }
+  html, body { background: #fff !important; }
+  aside, header, footer { display: none !important; }
+  main { padding: 0 !important; overflow: visible !important; height: auto !important; }
+  .no-print { display: none !important; }
+  .print-area { display: block !important; position: static; width: 100%; color: #000; font-size: 12px; }
+  .print-area table { width: 100%; border-collapse: collapse; }
+  .print-area th, .print-area td { border: 1px solid #cbd5e1; padding: 6px 8px; text-align: left; }
+  .print-area th { background: #f1f5f9; font-weight: 700; }
+}

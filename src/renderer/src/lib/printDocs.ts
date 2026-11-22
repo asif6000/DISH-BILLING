@@ -1,9 +1,23 @@
 import { money } from './format'
 
-export interface Company { name: string; name_bn?: string; address: string; mobile: string; footer?: string }
+export interface Company { name: string; name_bn?: string; address: string; mobile: string; footer?: string; mobile_alt?: string; email?: string; logo?: string }
 
 function esc(s: any): string {
-  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/>/g, '&gt;').replace(/</g, '&lt;')
+}
+
+// company header block shared by invoice & receipt: logo + name + contacts
+function companyHeaderHTML(company: Company, color: string): string {
+  return `
+      <div style="display:flex;gap:10px;align-items:center">
+        ${company.logo ? `<img src="${esc(company.logo)}" alt="logo" style="height:44px;width:44px;object-fit:contain" />` : ''}
+        <div>
+          <h2 style="margin:0;font-size:22px;color:${color}">${esc(company.name)}</h2>
+          ${company.name_bn ? `<div style="font-size:14px;color:#555">${esc(company.name_bn)}</div>` : ''}
+        </div>
+      </div>
+      <div style="font-size:12px;color:#555">${esc(company.address)}</div>
+      <div style="font-size:12px;color:#555">📞 ${esc(company.mobile)}${company.mobile_alt ? ` &nbsp;|&nbsp; 📞 ${esc(company.mobile_alt)}` : ''}${company.email ? ` &nbsp;|&nbsp; ✉ ${esc(company.email)}` : ''}</div>`
 }
 
 export function invoiceHTML(bill: any, customer: any, company: Company): string {
@@ -17,10 +31,7 @@ export function invoiceHTML(bill: any, customer: any, company: Company): string 
   <div style="max-width:680px;margin:24px auto;font-family:'Segoe UI',sans-serif;color:#111">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #4f46e5;padding-bottom:12px">
       <div>
-        <h2 style="margin:0;font-size:22px;color:#4f46e5">${esc(company.name)}</h2>
-        ${company.name_bn ? `<div style="font-size:14px;color:#555">${esc(company.name_bn)}</div>` : ''}
-        <div style="font-size:12px;color:#555">${esc(company.address)}</div>
-        <div style="font-size:12px;color:#555">${esc(company.mobile)}</div>
+        ${companyHeaderHTML(company, '#4f46e5')}
       </div>
       <div style="text-align:right">
         <div style="background:#4f46e5;color:#fff;padding:4px 14px;border-radius:6px;font-size:13px">INVOICE</div>
@@ -66,13 +77,16 @@ export function invoiceHTML(bill: any, customer: any, company: Company): string 
   </div>`
 }
 
+const BN_METHODS: Record<string, string> = { cash: 'নগদ (ক্যাশ)', bkash: 'বিকাশ', nagad: 'নগদ', rocket: 'রকেট', bank: 'ব্যাংক' }
+const BN_TYPES: Record<string, string> = { bill: 'বিল', advance: 'অগ্রিম', connection_fee: 'সংযোগ ফি', refund: 'রিফান্ড' }
+
 export function receiptHTML(payment: any, customer: any, company: Company): string {
+  // SINGLE payment receipt (A4, one page, one print window — no office/customer copies)
   return `
-  <div style="max-width:680px;margin:24px auto;font-family:'Segoe UI',sans-serif;color:#111">
+  <div style="max-width:680px;margin:24px auto;font-family:'Nirmala UI','Noto Sans Bengali','Segoe UI',sans-serif;color:#111">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #059669;padding-bottom:12px">
       <div>
-        <h2 style="margin:0;font-size:20px;color:#059669">${esc(company.name)}</h2>
-        <div style="font-size:12px;color:#555">${esc(company.address)} · ${esc(company.mobile)}</div>
+        ${companyHeaderHTML(company, '#059669')}
       </div>
       <div style="text-align:right">
         <div style="background:#059669;color:#fff;padding:4px 14px;border-radius:6px;font-size:13px">PAYMENT RECEIPT</div>
@@ -83,14 +97,15 @@ export function receiptHTML(payment: any, customer: any, company: Company): stri
     <table style="width:100%;margin-top:14px;font-size:13px;border-collapse:collapse">
       <tr><td style="padding:6px;color:#666;width:30%">Customer</td><td style="padding:6px"><b>${esc(customer.name)}</b> (${esc(customer.code)})</td></tr>
       <tr><td style="padding:6px;color:#666">Area</td><td style="padding:6px">${esc(customer.area_name || '-')}</td></tr>
-      <tr><td style="padding:6px;color:#666">Method</td><td style="padding:6px">${esc(payment.method)}</td></tr>
-      <tr><td style="padding:6px;color:#666">Type</td><td style="padding:6px">${esc(payment.type)}</td></tr>
-      <tr><td style="padding:6px;color:#666">Reference</td><td style="padding:6px">${esc(payment.reference || '-')}</td></tr>
+      <tr><td style="padding:6px;color:#666">Method</td><td style="padding:6px">${esc(BN_METHODS[payment.method] || payment.method)}</td></tr>
+      <tr><td style="padding:6px;color:#666">Type</td><td style="padding:6px">${esc(BN_TYPES[payment.type] || payment.type)}</td></tr>
+      <tr><td style="padding:6px;color:#666">Reference / TrxID</td><td style="padding:6px">${esc(payment.reference || '-')}</td></tr>
       <tr><td style="padding:6px;color:#666">Note</td><td style="padding:6px">${esc(payment.note || '-')}</td></tr>
       <tr style="background:#ecfdf5;font-weight:700;font-size:15px"><td style="padding:8px">AMOUNT RECEIVED</td><td style="padding:8px;text-align:right">৳ ${money(payment.amount)}</td></tr>
     </table>
-    <div style="margin-top:20px;font-size:12px;color:#555;text-align:center;border-top:1px dashed #ccc;padding-top:10px">
-      ${esc(company.footer || 'Thank you for your business')}
+    <div style="margin-top:20px;font-size:13px;color:#555;text-align:center;border-top:1px dashed #ccc;padding-top:10px">
+      ${esc(company.footer || 'পরিষেবার জন্য ধন্যবাদ — আবার আসবেন')}<br/>
+      <span style="font-size:11px;color:#999">${esc(payment.receipt_no)} · ${esc(payment.payment_date)}</span>
     </div>
   </div>`
 }
@@ -99,9 +114,10 @@ export function thermalReceiptHTML(payment: any, customer: any, company: Company
   return `
   <div style="width:64mm;font-family:'Segoe UI',monospace;font-size:11px;color:#000">
     <div style="text-align:center">
+      ${company.logo ? `<img src="${esc(company.logo)}" alt="logo" style="height:32px;object-fit:contain" /><br/>` : ''}
       <div style="font-weight:700">${esc(company.name)}</div>
       <div>${esc(company.address)}</div>
-      <div>Tel: ${esc(company.mobile)}</div>
+      <div>Tel: ${esc(company.mobile)}${company.mobile_alt ? `, ${esc(company.mobile_alt)}` : ''}</div>
     </div>
     <hr>
     <div>Receipt: ${esc(payment.receipt_no)}</div>

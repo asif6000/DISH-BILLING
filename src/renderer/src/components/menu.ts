@@ -1,167 +1,83 @@
-export interface MenuItem { labelKey: string; path: string; badge?: 'pending' }
-export interface MenuGroup { labelKey: string; icon: string; path?: string; children?: MenuItem[] }
+// Sidebar menu — mirrors the classic AVA app structure exactly:
+// ড্যাশবোর্ড, এরিয়া, মাইক্লাজিক, গ্রাহক, রিপোর্ট, স্টাফ, রিসেলার, মেসেজ,
+// একাউন্টেস, সাপোর্ট, সফটওয়্যার সাপোর্ট, একটিভিটি লগ
+// `perm` = the module permission the page requires (matches requirePermission
+// module names / generic entity keys). Items without perm are always visible;
+// the Layout hides items the logged-in user has no permission for.
+export interface MenuItem { labelKey: string; path: string; icon?: string; badge?: 'pending'; perm?: string }
+export interface MenuGroup { labelKey: string; icon: string; path?: string; children?: MenuItem[]; perm?: string }
 
 export const MENU: MenuGroup[] = [
-  { labelKey: 'nav_dashboard', icon: 'LayoutDashboard', path: '/dashboard' },
+  { labelKey: 'm_dashboard', icon: 'Home', path: '/dashboard', perm: 'dashboard' },
+  { labelKey: 'm_area', icon: 'MapPin', path: '/areas', perm: 'areas' },
+  { labelKey: 'm_myclassic', icon: 'ShoppingBasket', path: '/packages', perm: 'packages' },
   {
-    labelKey: 'nav_areas', icon: 'MapPin',
+    labelKey: 'm_customers_group', icon: 'Users',
     children: [
-      { labelKey: 'areas_all', path: '/areas' },
-      { labelKey: 'areas_zones', path: '/zones' },
-      { labelKey: 'areas_sub', path: '/sub-areas' },
-      { labelKey: 'areas_roads', path: '/roads' },
-      { labelKey: 'areas_customers', path: '/areas/customers' },
-      { labelKey: 'areas_collection', path: '/areas/collection' }
+      { labelKey: 'm_customers', path: '/customers', icon: 'Users', perm: 'customers' },
+      { labelKey: 'm_customers_other', path: '/customers?status=inactive', icon: 'Users', perm: 'customers' }
     ]
   },
   {
-    labelKey: 'nav_network', icon: 'Cable',
+    labelKey: 'm_reports_group', icon: 'BarChart3',
     children: [
-      { labelKey: 'network_devices', path: '/network' },
-      { labelKey: 'network_faults', path: '/network/faults' }
+      { labelKey: 'm_bill_report', path: '/reports/bills', icon: 'Printer', perm: 'reports' },
+      { labelKey: 'm_collection', path: '/payments', icon: 'TrendingUp', perm: 'payments' },
+      { labelKey: 'm_collection_history', path: '/payments/history', icon: 'History', perm: 'payments' },
+      { labelKey: 'm_reseller_collection', path: '/collectors/report', icon: 'Users', perm: 'reports' },
+      { labelKey: 'm_warning_message', path: '/messages/reminders', icon: 'Send', perm: 'messaging' }
     ]
   },
   {
-    labelKey: 'nav_customers', icon: 'Users',
+    labelKey: 'm_staff_group', icon: 'UserCog',
     children: [
-      { labelKey: 'customers_all', path: '/customers' },
-      { labelKey: 'customers_active', path: '/customers?status=active' },
-      { labelKey: 'customers_inactive', path: '/customers?status=inactive' },
-      { labelKey: 'customers_paid', path: '/customers?status=paid' },
-      { labelKey: 'customers_due', path: '/customers?status=due' },
-      { labelKey: 'customers_expired', path: '/customers?status=expired' },
-      { labelKey: 'customers_free', path: '/customers?status=free' },
-      { labelKey: 'customers_new', path: '/customers/new' },
-      { labelKey: 'customers_transfer', path: '/customers/transfer' },
-      { labelKey: 'customers_shift', path: '/customers/shift' },
-      { labelKey: 'customers_documents', path: '/customers/documents' },
-      { labelKey: 'customers_history', path: '/customers/history' },
-      { labelKey: 'customers_import', path: '/customers/import' },
-      { labelKey: 'customers_export', path: '/customers/export' }
+      { labelKey: 'm_manager', path: '/staff', icon: 'User', perm: 'staff' },
+      { labelKey: 'm_collector', path: '/collectors', icon: 'Users', perm: 'collectors' },
+      { labelKey: 'm_cashier', path: '/accounts/cashbook', icon: 'SquareUser', perm: 'accounts' }
     ]
   },
   {
-    labelKey: 'nav_billing', icon: 'FileSpreadsheet',
+    labelKey: 'm_reseller_group', icon: 'CircleUser',
     children: [
-      { labelKey: 'billing_monthly', path: '/billing' },
-      { labelKey: 'billing_generate', path: '/billing/generate' },
-      { labelKey: 'billing_due', path: '/billing?status=due' },
-      { labelKey: 'billing_partial', path: '/billing?status=partial' },
-      { labelKey: 'billing_discounts', path: '/discounts' },
-      { labelKey: 'billing_history', path: '/billing/history' }
+      { labelKey: 'm_reseller', path: '/resellers', icon: 'Users', perm: 'resellers' },
+      { labelKey: 'm_recharge_history', path: '/resellers/wallet', icon: 'Banknote', perm: 'resellers' },
+      { labelKey: 'm_msg_request', path: '/message-request', icon: 'MessageSquareMore' },
+      { labelKey: 'm_payment_withdraw', path: '/payment-withdraw', icon: 'Wallet' }
     ]
   },
   {
-    labelKey: 'nav_payments', icon: 'Wallet',
+    labelKey: 'm_message_group', icon: 'MessageCircle',
     children: [
-      { labelKey: 'payments_collect', path: '/payments/collect' },
-      { labelKey: 'payments_renewal', path: '/payments/renewal' },
-      { labelKey: 'payments_history', path: '/payments' },
-      { labelKey: 'payments_cash', path: '/payments?method=cash' },
-      { labelKey: 'payments_advance', path: '/payments?type=advance' },
-      { labelKey: 'payments_refund', path: '/payments/refund' },
-      { labelKey: 'payments_daily', path: '/payments/daily' }
+      { labelKey: 'm_bulk_message', path: '/messages', icon: 'MessageSquareMore', perm: 'messaging' },
+      { labelKey: 'm_msg_settings', path: '/templates', icon: 'Settings', perm: 'sms_templates' },
+      { labelKey: 'm_msg_log', path: '/messages/history', icon: 'MailOpen', perm: 'messaging' }
     ]
   },
   {
-    labelKey: 'nav_connections', icon: 'Plug',
+    labelKey: 'm_accounts_group', icon: 'Wallet',
     children: [
-      { labelKey: 'connections_all', path: '/connections' },
-      { labelKey: 'connections_history', path: '/connections/history' }
-    ]
-  },
-  { labelKey: 'nav_packages', icon: 'Package', path: '/packages' },
-  {
-    labelKey: 'nav_staff', icon: 'IdCard',
-    children: [
-      { labelKey: 'staff_all', path: '/staff' },
-      { labelKey: 'staff_attendance', path: '/attendance' },
-      { labelKey: 'staff_leaves', path: '/leaves' },
-      { labelKey: 'staff_salary', path: '/salaries' }
+      { labelKey: 'm_expense', path: '/accounts/expense', icon: 'Banknote', perm: 'accounts' },
+      { labelKey: 'm_inventory2', path: '/purchases', icon: 'ClipboardList', perm: 'inventory' }
     ]
   },
   {
-    labelKey: 'nav_collectors', icon: 'UserCheck',
+    labelKey: 'm_support_group', icon: 'Headphones',
     children: [
-      { labelKey: 'collectors_all', path: '/collectors' },
-      { labelKey: 'collectors_assign', path: '/collectors/assign' },
-      { labelKey: 'collectors_deposit', path: '/deposits' },
-      { labelKey: 'collectors_verification', path: '/collectors/report' }
+      { labelKey: 'm_open_ticket', path: '/complaints', icon: 'UserMinus', perm: 'complaints' },
+      { labelKey: 'm_support_numbers', path: '/support-numbers', icon: 'Smartphone' },
+      { labelKey: 'm_package_change', path: '/packages?change=1', icon: 'RefreshCw', perm: 'packages' }
     ]
   },
   {
-    labelKey: 'nav_resellers', icon: 'Store',
+    labelKey: 'm_software_support', icon: 'Bell',
     children: [
-      { labelKey: 'resellers_all', path: '/resellers' },
-      { labelKey: 'resellers_wallet', path: '/resellers/wallet' }
+      { labelKey: 'm_open_ticket2', path: '/complaints?status=pending', icon: 'Bookmark', perm: 'complaints' },
+      { labelKey: 'm_support_numbers2', path: '/support-numbers', icon: 'Phone' },
+      { labelKey: 'm_tutorial', path: '/tutorial', icon: 'Video' }
     ]
   },
-  {
-    labelKey: 'nav_messages', icon: 'MessageSquare',
-    children: [
-      { labelKey: 'messages_individual', path: '/messages' },
-      { labelKey: 'messages_reminder', path: '/messages/reminders' },
-      { labelKey: 'messages_templates', path: '/templates' },
-      { labelKey: 'messages_history', path: '/messages/history' }
-    ]
-  },
-  {
-    labelKey: 'nav_complaints', icon: 'Wrench',
-    children: [
-      { labelKey: 'complaints_all', path: '/complaints' },
-      { labelKey: 'complaints_pending', path: '/complaints?status=pending' },
-      { labelKey: 'complaints_resolved', path: '/complaints?status=resolved' }
-    ]
-  },
-  {
-    labelKey: 'nav_inventory', icon: 'Boxes',
-    children: [
-      { labelKey: 'inventory_products', path: '/products' },
-      { labelKey: 'inventory_stock', path: '/stock' },
-      { labelKey: 'inventory_purchases', path: '/purchases' },
-      { labelKey: 'inventory_suppliers', path: '/suppliers' }
-    ]
-  },
-  {
-    labelKey: 'nav_accounts', icon: 'Landmark',
-    children: [
-      { labelKey: 'accounts_cashbook', path: '/accounts/cashbook' },
-      { labelKey: 'accounts_bank', path: '/accounts' },
-      { labelKey: 'accounts_income', path: '/accounts/income' },
-      { labelKey: 'accounts_expense', path: '/accounts/expense' },
-      { labelKey: 'accounts_transfer', path: '/transfers' },
-      { labelKey: 'accounts_receivables', path: '/accounts/receivables' },
-      { labelKey: 'accounts_pl', path: '/accounts/pl' }
-    ]
-  },
-  {
-    labelKey: 'nav_expenses', icon: 'Receipt',
-    children: [
-      { labelKey: 'expenses_add', path: '/expenses/add' },
-      { labelKey: 'expenses_daily', path: '/expenses' },
-      { labelKey: 'expenses_categories', path: '/expense-categories' }
-    ]
-  },
-  { labelKey: 'nav_reports', icon: 'BarChart3', path: '/reports' },
-  {
-    labelKey: 'nav_marketing', icon: 'Megaphone',
-    children: [
-      { labelKey: 'marketing_leads', path: '/leads' },
-      { labelKey: 'marketing_followup', path: '/followups' }
-    ]
-  },
-  { labelKey: 'nav_automation', icon: 'Bot', path: '/automation' },
-  { labelKey: 'nav_subscription', icon: 'CreditCard', path: '/subscription' },
-  { labelKey: 'nav_branches', icon: 'Building2', path: '/branches' },
-  {
-    labelKey: 'nav_security', icon: 'ShieldCheck',
-    children: [
-      { labelKey: 'security_users', path: '/security/users' },
-      { labelKey: 'security_roles', path: '/security/roles' },
-      { labelKey: 'security_logs', path: '/security/logs' },
-      { labelKey: 'security_logins', path: '/security/logins' },
-      { labelKey: 'security_backup', path: '/security/backup' }
-    ]
-  },
-  { labelKey: 'nav_settings', icon: 'Settings', path: '/settings' }
+  { labelKey: 'm_activity_log', icon: 'Clock', path: '/security/logs', perm: 'security' },
+  { labelKey: 'security_roles', icon: 'ShieldCheck', path: '/security/roles', perm: 'security' },
+  { labelKey: 'm_user_manage', icon: 'UserCog', path: '/security/users', perm: 'users' },
+  { labelKey: 'm_settings', icon: 'Settings', path: '/settings' }
 ]

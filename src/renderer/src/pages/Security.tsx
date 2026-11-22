@@ -5,20 +5,10 @@ import { PageHeader, Modal, useToast, StatusBadge, ConfirmDialog } from '../comp
 import { DataTable, Column } from '../components/DataTable'
 import { money, dateFmt } from '../lib/format'
 import { errMsg } from '../lib/api'
-import { useReflist } from '../components/ui'
+import { PERMISSION_CATALOG } from '@shared/permissions'
 
 const TABS = ['users', 'roles', 'logs', 'logins', 'backup'] as const
 type Tab = typeof TABS[number]
-
-// Module permission keys for role editor
-const PERM_MODULES = [
-  'all', 'dashboard', 'customers', 'billing', 'payments', 'connections', 'packages', 'areas',
-  'zones', 'sub_areas', 'roads', 'network_devices', 'network_faults', 'staff', 'attendance',
-  'leaves', 'salaries', 'collectors', 'cash_deposits', 'resellers', 'messaging', 'complaints',
-  'products', 'suppliers', 'purchases', 'stock_movements', 'accounts', 'transactions',
-  'expense_categories', 'account_transfers', 'discounts', 'customer_documents', 'branches',
-  'leads', 'followups', 'sms_templates', 'messages', 'reports', 'automation', 'settings', 'security'
-]
 
 export default function SecurityPage({ tab: initial }: { tab?: string }) {
   const { t, lang } = useI18n()
@@ -54,6 +44,7 @@ function UsersTab() {
   const [editing, setEditing] = useState<any>(null)
   const [pwOpen, setPwOpen] = useState(false)
   const [deleting, setDeleting] = useState<any>(null)
+  const [permUser, setPermUser] = useState<any>(null)
 
   const load = () => {
     window.api.users.list().then(setRows).catch((e) => toast.push('error', errMsg(e)))
@@ -77,6 +68,7 @@ function UsersTab() {
       ]} rows={rows} exportName="users"
         actions={(r) => (
           <div className="flex justify-end gap-1">
+            <button className="btn-secondary btn-sm" title={t('permissionTitle')} onClick={() => setPermUser(r)}><KeyRound size={13} /></button>
             <button className="btn-secondary btn-sm" onClick={() => { setEditing(r); setOpen(true) }}><Pencil size={13} /></button>
             <button className="btn-secondary btn-sm text-red-600" onClick={() => setDeleting(r)}><Trash2 size={13} /></button>
           </div>
@@ -86,6 +78,169 @@ function UsersTab() {
       <ConfirmDialog open={!!deleting} onClose={() => setDeleting(null)}
         onConfirm={() => window.api.users.delete(deleting.id).then(() => { toast.push('success', t('deleted')); load() }).catch((e) => toast.push('error', errMsg(e)))}
         title={t('delete')} message={`${deleting?.username} — ${t('confirmDelete')}`} />
+      <SupabaseUsersCard />
+      {permUser && <PermissionModal user={permUser} onClose={() => setPermUser(null)} />}
+    </div>
+  )
+}
+
+// ================= Dynamic Permission Management (delegation-aware) =================
+function PermissionModal({ user, onClose }: any) {
+  const { t, lang } = useI18n()
+  const toast = useToast()
+  const [data, setData] = useState<any>(null)
+  const [grants, setGrants] = useState<Record<string, boolean>>({})
+  const [delegable, setDelegable] = useState<Record<string, boolean>>({})
+  const [audit, setAudit] = useState<any[]>([])
+  const [busy, setBusy] = useState(false)
+  const [isSuper, setIsSuper] = useState(false)
+
+  const load = () => {
+    window.api.users.permsGet(user.id).then((r: any) => {
+      setData(r)
+      const g: Record<string, boolean> = {}
+      const d: Record<string, boolean> = {}
+      for (const gr of r.grants || []) { g[gr.permission_key] = true; d[gr.permission_key] = !!gr.can_delegate }
+      setGrants(g); setDelegable(d)
+    }).catch((e) => toast.push('error', errMsg(e)))
+    window.api.users.permsAudit(user.id).then(setAudit).catch(() => setAudit([]))
+  }
+  useEffect(() => {
+    window.api.auth.check().then((r: any) => setIsSuper(!!r?.user?.permissions?.includes('all'))).catch(() => {})
+    if (user) load()
+  }, [user])
+
+  const save = async () => {
+    setBusy(true)
+    try {
+      const list = Object.keys(grants).filter((k) => grants[k]).map((k) => ({ key: k, canDelegate: delegable[k] !== false }))
+      await window.api.users.permsSet(user.id, list)
+      toast.push('success', t('saved'))
+      load()
+    } catch (e) { toast.push('error', errMsg(e)) } finally { setBusy(false) }
+  }
+
+  if (!data) return null
+  return (
+    <Modal open onClose={onClose} title={`${t('permissionTitle')} — ${data.user.username} (${data.user.role_name})`} width="max-w-3xl">
+      <div className="space-y-3">
+        {data.user.role_name === 'SUPER_ADMIN' ? (
+          <p className="text-sm text-slate-400">{lang === 'bn' ? 'SUPER_ADMIN এর ক্ষমতা পরিবর্তন করা যায় না' : 'SUPER_ADMIN permissions cannot be modified'}</p>
+        ) : (
+          <>
+            <div className="flex flex-wrap gap-1 items-center">
+              <span className="text-xs text-slate-400">{lang === 'bn' ? 'Role থেকে পাওয়া:' : 'From role:'}</span>
+              {(data.rolePermissions || []).map((p: string) => <span key={p} className="badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300 text-[10px]">{p}</span>)}
+            </div>
+            <div className="max-h-80 overflow-y-auto space-y-2 pr-1">
+              {PERMISSION_CATALOG.map((m) => (
+                <div key={m.module} className="card p-3">
+                  <div className="font-semibold text-sm mb-2">{lang === 'bn' ? m.labelBn : m.label}</div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                    {m.actions.map((a) => {
+                      const key = `${m.module}.${a.key}`
+                      const fromRole = (data.rolePermissions || []).includes(m.module) || (data.rolePermissions || []).includes(key)
+                      return (
+                        <label key={key} className={`flex items-center gap-2 text-xs p-2 rounded border ${fromRole ? 'border-emerald-200 bg-emerald-50 dark:bg-emerald-900/20' : 'border-slate-200 dark:border-slate-700'} cursor-pointer`}>
+                          <input type="checkbox" disabled={fromRole}
+                            checked={fromRole || !!grants[key]}
+                            onChange={(e) => setGrants((g) => ({ ...g, [key]: e.target.checked }))} />
+                          <span className="truncate">{lang === 'bn' ? a.labelBn : a.label}</span>
+                          {fromRole && <span className="text-[9px] text-emerald-600">role</span>}
+                        </label>
+                      )
+                    })}
+                  </div>
+                  {isSuper && (
+                    <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-400">
+                      <input type="checkbox" checked={Object.keys(delegable).some((k) => k.startsWith(m.module + '.')) ? m.actions.every((a) => delegable[`${m.module}.${a.key}`] !== false) : true}
+                        onChange={(e) => {
+                          const nd = { ...delegable }
+                          for (const a of m.actions) nd[`${m.module}.${a.key}`] = e.target.checked
+                          setDelegable(nd)
+                        }} />
+                      {lang === 'bn' ? 'এই মডিউল delegate করতে পারবে (staff-কে দেওয়ার ক্ষমতা)' : 'Can delegate this module to their staff'}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-end gap-2">
+              <button className="btn-secondary" onClick={onClose}>{t('cancel')}</button>
+              <button className="btn-primary" onClick={save} disabled={busy}>{busy ? '...' : t('save')}</button>
+            </div>
+          </>
+        )}
+        <div>
+          <h4 className="font-semibold text-sm mb-1">{t('permissionHistory')}</h4>
+          {audit.length ? (
+            <div className="max-h-40 overflow-y-auto">
+              <table className="w-full text-[11px]">
+                <tbody>
+                  {audit.map((a, i) => (
+                    <tr key={i} className="border-b border-slate-50 dark:border-slate-800/50">
+                      <td className="p-1 text-slate-400">{String(a.created_at).slice(0, 16)}</td>
+                      <td className="p-1 font-mono">{a.permission_key}</td>
+                      <td className={`p-1 font-semibold ${a.action === 'grant' ? 'text-emerald-600' : 'text-red-600'}`}>{a.action}</td>
+                      <td className="p-1 text-slate-400">{a.actor || '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : <p className="text-xs text-slate-400">{t('noData')}</p>}
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+// All users from the Supabase app_users table (pending + approved + rejected)
+function SupabaseUsersCard() {
+  const { t, lang } = useI18n()
+  const [rows, setRows] = useState<any[]>([])
+  const [failed, setFailed] = useState(false)
+  const load = () => window.api.userAccounts.remoteUsers().then((r: any) => { setRows(r || []); setFailed(false) }).catch(() => setFailed(true))
+  useEffect(() => { load() }, [])
+  const badge = (s: string) => s === 'approved' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+    : s === 'rejected' ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+    : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+  return (
+    <div className="card p-4 mt-5">
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="font-semibold text-sm">{lang === 'bn' ? 'Supabase-এর সব ইউজার (Signup list)' : 'All Supabase users (signup list)'}</h3>
+        <button className="btn-secondary btn-sm" onClick={load}>{lang === 'bn' ? 'রিফ্রেশ' : 'Refresh'}</button>
+      </div>
+      {failed ? (
+        <p className="text-sm text-slate-400">{lang === 'bn' ? 'Supabase থেকে লোড করা যায়নি — ইন্টারনেট দেখুন বা SQL (get_app_users) রান করা আছে কিনা দেখুন' : 'Could not load from Supabase — check internet or run the get_app_users SQL'}</p>
+      ) : !rows.length ? (
+        <p className="text-sm text-slate-400">{t('noData')}</p>
+      ) : (
+        <div className="overflow-x-auto max-h-72 overflow-y-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-slate-500 border-b border-slate-100 dark:border-slate-800">
+                <th className="text-left py-1.5">{t('username')}</th>
+                <th className="text-left py-1.5">{t('name')}</th>
+                <th className="text-left py-1.5">{t('mobile')}</th>
+                <th className="text-left py-1.5">{t('statusCol')}</th>
+                <th className="text-left py-1.5">{t('date')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((u, i) => (
+                <tr key={i} className="border-b border-slate-50 dark:border-slate-800/50">
+                  <td className="py-1.5 font-mono text-xs">{u.username}</td>
+                  <td className="py-1.5">{u.full_name || '-'}</td>
+                  <td className="py-1.5">{u.mobile || '-'}</td>
+                  <td className="py-1.5"><span className={`badge ${badge(u.status)}`}>{u.status}</span></td>
+                  <td className="py-1.5 text-xs text-slate-400">{String(u.approved_at || u.created_at || '').slice(0, 16) || '-'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }
@@ -95,6 +250,11 @@ function UserModal({ open, onClose, editing, roles, onSaved }: any) {
   const toast = useToast()
   const [f, setF] = useState<any>({})
   const [busy, setBusy] = useState(false)
+  const [isSuper, setIsSuper] = useState(false)
+  useEffect(() => { window.api.auth.check().then((r: any) => setIsSuper(!!r?.user?.permissions?.includes('all'))).catch(() => {}) }, [])
+  // RBAC: ADMIN (non-super) can only create/edit MANAGER & COLLECTOR accounts.
+  // Role/status edits are SUPER_ADMIN privileges — hidden from the form too.
+  const roleOptions = isSuper ? roles : roles.filter((r: any) => r.name === 'Manager' || r.name === 'Collector')
 
   useEffect(() => {
     if (!open) return
@@ -129,14 +289,17 @@ function UserModal({ open, onClose, editing, roles, onSaved }: any) {
           <input type="password" className="input" value={f.password || ''} onChange={(e) => setF({ ...f, password: e.target.value })} placeholder={editing ? '(unchanged)' : 'min 6 chars'} /></div>
         <div className="grid grid-cols-2 gap-3">
           <div><label className="label">{t('role')} <span className="text-red-500">*</span></label>
-            <select className="input" value={f.role_id || ''} onChange={(e) => setF({ ...f, role_id: e.target.value })}>
+            <select className="input" value={f.role_id || ''} onChange={(e) => setF({ ...f, role_id: e.target.value })} disabled={!isSuper && !!editing}>
               <option value="">—</option>
-              {roles.map((r: any) => <option key={r.id} value={r.id}>{r.name}</option>)}
-            </select></div>
+              {roleOptions.map((r: any) => <option key={r.id} value={r.id}>{r.name}</option>)}
+            </select>
+            {!isSuper && <p className="text-[10px] text-slate-400">{lang === 'bn' ? 'Admin শুধু Manager/Collector তৈরি করতে পারে' : 'Admin can only create Manager/Collector accounts'}</p>}
+          </div>
           <div><label className="label">{t('statusCol')}</label>
-            <select className="input" value={f.status || 'active'} onChange={(e) => setF({ ...f, status: e.target.value })}>
+            <select className="input" value={f.status || 'active'} onChange={(e) => setF({ ...f, status: e.target.value })} disabled={!isSuper && !!editing}>
               <option value="active">{t('active')}</option>
               <option value="inactive">{t('inactive')}</option>
+              {isSuper && <option value="suspended">{lang === 'bn' ? 'স্থগিত' : 'Suspended'}</option>}
             </select></div>
         </div>
       </div>
@@ -178,8 +341,18 @@ function ChangePasswordModal({ open, onClose }: any) {
   )
 }
 
+// Module permission keys for the role editor — legacy module keys not part of
+// PERMISSION_CATALOG (bespoke IPC modules / entity pages).
+const EXTRA_MODULES = [
+  'connections', 'zones', 'sub_areas', 'roads', 'network_devices', 'network_faults',
+  'attendance', 'leaves', 'salaries', 'cash_deposits', 'products', 'suppliers',
+  'purchases', 'stock_movements', 'transactions', 'expense_categories', 'account_transfers',
+  'discounts', 'customer_documents', 'branches', 'leads', 'followups', 'sms_templates',
+  'messages', 'automation', 'settings'
+].filter((m) => !PERMISSION_CATALOG.some((c) => c.module === m))
+
 function RolesTab() {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const toast = useToast()
   const [rows, setRows] = useState<any[]>([])
   const [open, setOpen] = useState(false)
@@ -189,9 +362,28 @@ function RolesTab() {
   const load = () => window.api.roles.list().then(setRows).catch(() => {})
   useEffect(() => { load() }, [])
 
+  // SUPER_ADMIN keeps its exclusive full-access role — read-only for everyone.
+  const readOnly = open && editing?.name === 'SUPER_ADMIN'
+  const isSystem = !!editing?.is_system
+
+  const toggle = (key: string) => setPerms((s) => {
+    const n = new Set(s)
+    if (n.has(key)) n.delete(key)
+    else n.add(key)
+    // a module key dominates its granular keys — adding/removing it also
+    // drops the now-redundant 'module.action' keys so the set stays clean
+    for (const k of [...n]) if (k.startsWith(key + '.')) n.delete(k)
+    return n
+  })
+
+  const hasAccess = (mod: string) => perms.has(mod)
+  const actionChecked = (mod: string, action: string) => perms.has(mod) || perms.has(`${mod}.${action}`)
+
   const save = async () => {
     try {
-      await window.api.roles.save({ id: editing?.id, name: editing?.name || 'New Role', permissions: [...perms] })
+      // 'all' is reserved for SUPER_ADMIN — never grantable from the editor
+      const list = [...perms].filter((k) => k !== 'all')
+      await window.api.roles.save({ id: editing?.id, name: editing?.name || 'New Role', permissions: list })
       toast.push('success', t('saved'))
       setOpen(false)
       load()
@@ -210,26 +402,78 @@ function RolesTab() {
       ]} rows={rows}
         actions={(r) => (
           <div className="flex justify-end gap-1">
-            <button className="btn-secondary btn-sm" onClick={() => { setEditing(r); setPerms(new Set(JSON.parse(r.permissions || '[]'))); setOpen(true) }}><Pencil size={13} /></button>
+            <button className="btn-secondary btn-sm" disabled={r.name === 'SUPER_ADMIN'}
+              onClick={() => { setEditing(r); setPerms(new Set(JSON.parse(r.permissions || '[]'))); setOpen(true) }}><Pencil size={13} /></button>
             {!r.is_system && <button className="btn-secondary btn-sm text-red-600" onClick={() => window.api.roles.delete(r.id).then(load).catch((e) => toast.push('error', errMsg(e)))}><Trash2 size={13} /></button>}
           </div>
         )} />
-      <Modal open={open} onClose={() => setOpen(false)} title={t('security_roles')} width="max-w-lg">
-        <div><label className="label">{t('role')}</label>
-          <input className="input" value={editing?.name || ''} onChange={(e) => setEditing({ ...editing, name: e.target.value })} /></div>
-        <div className="grid grid-cols-3 gap-2 mt-3 max-h-64 overflow-y-auto">
-          {PERM_MODULES.map((m) => (
-            <label key={m} className={`flex items-center gap-1.5 px-2 py-1.5 rounded border text-xs cursor-pointer ${perms.has(m) ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20' : 'border-slate-200 dark:border-slate-700'}`}>
-              <input type="checkbox" checked={perms.has(m)} className="w-3.5 h-3.5"
-                onChange={() => setPerms((s) => { const n = new Set(s); n.has(m) ? n.delete(m) : n.add(m); return n })} />
-              {m}
-            </label>
-          ))}
-        </div>
-        <div className="flex justify-end gap-2 mt-4">
-          <button className="btn-secondary" onClick={() => setOpen(false)}>{t('cancel')}</button>
-          <button className="btn-primary" onClick={save}>{t('save')}</button>
-        </div>
+      <Modal open={open} onClose={() => setOpen(false)} title={t('security_roles')} width="max-w-2xl">
+        {readOnly ? (
+          <p className="text-sm text-slate-500 py-4">{lang === 'bn' ? 'SUPER_ADMIN role সম্পূর্ণ ক্ষমতার অধিকারী — এটি পরিবর্তন করা যায় না।' : 'The SUPER_ADMIN role holds full access and cannot be modified.'}</p>
+        ) : (
+          <>
+            <div><label className="label">{t('role')}</label>
+              <input className="input" value={editing?.name || ''} disabled={isSystem}
+                onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
+              {isSystem && <p className="text-[10px] text-slate-400 mt-1">{lang === 'bn' ? 'System role — শুধু permissions পরিবর্তন করা যাবে' : 'System role — only its permissions can be edited'}</p>}
+            </div>
+            <div className="flex items-center justify-between mt-3 mb-1">
+              <label className="label mb-0">{t('permissions')}</label>
+              <div className="flex gap-1">
+                <button type="button" className="btn-secondary btn-sm"
+                  onClick={() => setPerms(new Set([...PERMISSION_CATALOG.map((m) => m.module), ...EXTRA_MODULES]))}>{lang === 'bn' ? 'সব সিলেক্ট' : 'Select all'}</button>
+                <button type="button" className="btn-secondary btn-sm" onClick={() => setPerms(new Set())}>{lang === 'bn' ? 'ক্লিয়ার' : 'Clear'}</button>
+              </div>
+            </div>
+            <p className="text-[10px] text-slate-400 mb-2">{lang === 'bn'
+              ? 'মডিউল = পুরো অংশ। আলাদা action (দেখা/তৈরি/সম্পাদনা/মুছে ফেলা) দিলে শুধু সেই কাজটি অনুমোদিত হবে।'
+              : 'Module = full section. Individual actions (View/Create/Edit/Delete) grant only that action.'}</p>
+            <div className="max-h-72 overflow-y-auto space-y-2 pr-1">
+              {PERMISSION_CATALOG.map((m) => (
+                <div key={m.module} className="card p-2.5">
+                  <label className={`flex items-center gap-2 text-xs font-semibold cursor-pointer ${hasAccess(m.module) ? 'text-brand-700 dark:text-brand-400' : ''}`}>
+                    <input type="checkbox" checked={hasAccess(m.module)} className="w-3.5 h-3.5"
+                      onChange={() => toggle(m.module)} />
+                    {lang === 'bn' ? m.labelBn : m.label}
+                    <span className="font-mono text-[9px] text-slate-400">{m.module}</span>
+                  </label>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5 mt-1.5 ml-6">
+                    {m.actions.map((a) => {
+                      const key = `${m.module}.${a.key}`
+                      const checked = actionChecked(m.module, a.key)
+                      return (
+                        <label key={key} className={`flex items-center gap-1.5 px-2 py-1 rounded border text-[11px] cursor-pointer ${checked ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20' : 'border-slate-200 dark:border-slate-700'}`}>
+                          <input type="checkbox" checked={checked} className="w-3 h-3"
+                            onChange={() => toggle(key)} />
+                          <span className="truncate">{lang === 'bn' ? a.labelBn : a.label}</span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
+              <div className="card p-2.5">
+                <div className="text-xs font-semibold mb-1.5">{lang === 'bn' ? 'অন্যান্য অংশ (legacy)' : 'Other sections (legacy)'}</div>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {EXTRA_MODULES.map((m) => (
+                    <label key={m} className={`flex items-center gap-1.5 px-2 py-1.5 rounded border text-[11px] cursor-pointer ${perms.has(m) ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20' : 'border-slate-200 dark:border-slate-700'}`}>
+                      <input type="checkbox" checked={perms.has(m)} className="w-3 h-3"
+                        onChange={() => toggle(m)} />
+                      {m}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <p className="text-[10px] text-amber-600 mt-2">{lang === 'bn'
+              ? "'all' (সম্পূর্ণ ক্ষমতা) শুধুই SUPER_ADMIN role-এর জন্য — অন্য role-এ দেওয়া যায় না।"
+              : "'all' (full access) is exclusive to the SUPER_ADMIN role and cannot be granted here."}</p>
+            <div className="flex justify-end gap-2 mt-3">
+              <button className="btn-secondary" onClick={() => setOpen(false)}>{t('cancel')}</button>
+              <button className="btn-primary" onClick={save}>{t('save')}</button>
+            </div>
+          </>
+        )}
       </Modal>
     </div>
   )

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { ShieldCheck, Phone, Copy, KeyRound, CheckCircle2, Send, AlertTriangle } from 'lucide-react'
+import { ShieldCheck, Phone, Copy, KeyRound, CheckCircle2, Send, AlertTriangle, Smartphone, ReceiptText, BadgeCheck } from 'lucide-react'
 import { useI18n } from '../lib/i18n'
 import { PageHeader, useToast } from '../components/ui'
 import { errMsg } from '../lib/api'
@@ -92,17 +92,19 @@ export default function SubscriptionRenewalPage() {
     : s.state === 'expired' ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
     : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
 
-  const payNum = (label: string, num: string) => (
-    <div className="flex items-center justify-between gap-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl px-4 py-3 border border-slate-200 dark:border-slate-700">
+  const payNum = (label: string, num: string, color: string, brandBg: string) => (
+    <div className="flex items-center justify-between gap-3 bg-white dark:bg-slate-800/60 rounded-xl px-4 py-3 border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md hover:border-slate-300 dark:hover:border-slate-600 transition-all">
       <div className="flex items-center gap-3">
-        <Phone size={18} className="text-emerald-600 dark:text-emerald-400 shrink-0" />
+        <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${brandBg} shrink-0`}>
+          <Phone size={18} className="text-white" />
+        </div>
         <div>
-          <div className="text-[11px] uppercase tracking-wide text-slate-400">{label}</div>
-          <div className="font-mono font-bold text-lg">{num}</div>
+          <div className="text-[10px] font-bold uppercase tracking-widest" style={{ color }}>{label}</div>
+          <div className="font-mono font-bold text-lg tracking-wide">{num}</div>
         </div>
       </div>
       <button className="btn-secondary btn-sm shrink-0" onClick={() => copy(num)} title={t('subCopy')}>
-        <Copy size={14} />
+        <Copy size={14} /> {t('subCopy')}
       </button>
     </div>
   )
@@ -127,15 +129,15 @@ export default function SubscriptionRenewalPage() {
           </p>
         )}
         {cd && (
-          <div className="mt-3 rounded-xl bg-slate-900 dark:bg-slate-900/80 text-white px-4 py-3 flex flex-wrap items-center justify-center gap-2 font-mono text-lg">
+          <div className="mt-3 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 dark:from-slate-900 dark:via-slate-900 dark:to-slate-800 text-white px-4 py-3 flex flex-wrap items-center justify-center gap-2 font-mono text-lg shadow-lg ring-1 ring-white/5">
             <span className="text-[11px] font-sans text-slate-400 mr-1">{t('subTimeLeft')}</span>
-            <span><b className="text-brand-400 text-2xl">{String(cd.d).padStart(2, '0')}</b> <span className="text-[11px] text-slate-400">{t('uDays')}</span></span>
+            <span><b className="text-brand-400 text-2xl tabular-nums">{String(cd.d).padStart(2, '0')}</b> <span className="text-[11px] text-slate-400">{t('uDays')}</span></span>
             <span className="text-slate-600">:</span>
-            <span><b className="text-brand-400 text-2xl">{String(cd.h).padStart(2, '0')}</b> <span className="text-[11px] text-slate-400">{t('uHours')}</span></span>
+            <span><b className="text-brand-400 text-2xl tabular-nums">{String(cd.h).padStart(2, '0')}</b> <span className="text-[11px] text-slate-400">{t('uHours')}</span></span>
             <span className="text-slate-600">:</span>
-            <span><b className="text-brand-400 text-2xl">{String(cd.m).padStart(2, '0')}</b> <span className="text-[11px] text-slate-400">{t('uMin')}</span></span>
+            <span><b className="text-brand-400 text-2xl tabular-nums">{String(cd.m).padStart(2, '0')}</b> <span className="text-[11px] text-slate-400">{t('uMin')}</span></span>
             <span className="text-slate-600">:</span>
-            <span><b className="text-emerald-400 text-2xl">{String(cd.s).padStart(2, '0')}</b> <span className="text-[11px] text-slate-400">{t('uSec')}</span></span>
+            <span><b className="text-emerald-400 text-2xl tabular-nums">{String(cd.s).padStart(2, '0')}</b> <span className="text-[11px] text-slate-400">{t('uSec')}</span></span>
           </div>
         )}
       </div>
@@ -143,14 +145,35 @@ export default function SubscriptionRenewalPage() {
       {/* payment info */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
         <div className="card p-4">
-          <div className="text-center rounded-xl bg-brand-600/10 border border-brand-500/20 p-4 mb-4">
-            <div className="text-xs uppercase tracking-wide text-brand-600 dark:text-brand-400">{t('subFee')}</div>
-            <div className="text-3xl font-extrabold mt-1">৳ 10,000 <span className="text-base font-semibold text-slate-400">/ {t('months')}</span></div>
+          {/* price hero */}
+          <div className="text-center rounded-2xl bg-gradient-to-br from-brand-600 to-brand-800 text-white p-5 mb-4 shadow-lg shadow-brand-600/20">
+            <div className="text-[11px] uppercase tracking-widest text-white/70">{t('subFee')}</div>
+            <div className="text-4xl font-extrabold mt-1">৳ 10,000 <span className="text-base font-semibold text-white/60">/ {t('months')}</span></div>
           </div>
-          <p className="text-sm text-slate-500 mb-2">{t('subPayVia')}</p>
+
+          {/* send-money instruction (prominent) */}
+          <div className="rounded-2xl bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 p-4 mb-4">
+            <div className="flex items-center gap-2 text-amber-700 dark:text-amber-300 font-bold text-sm">
+              <Smartphone size={16} /> {t('subSendMoneyTitle')}
+            </div>
+            <p className="text-xs text-amber-700/90 dark:text-amber-300/80 mt-1 leading-relaxed">{t('subSendMoneyDesc')}</p>
+            <div className="grid grid-cols-1 gap-1.5 mt-3">
+              {[
+                { n: 1, icon: Smartphone, txt: t('subStep1') },
+                { n: 2, icon: ReceiptText, txt: t('subStep2') },
+                { n: 3, icon: BadgeCheck, txt: t('subStep3') }
+              ].map(({ n, icon: Ic, txt }) => (
+                <div key={n} className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 bg-white/70 dark:bg-slate-800/60 rounded-lg px-2.5 py-1.5">
+                  <span className="min-w-[18px] h-[18px] rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center">{n}</span>
+                  <Ic size={12} className="text-amber-600 shrink-0" /> {txt}
+                </div>
+              ))}
+            </div>
+          </div>
+
           <div className="space-y-2">
-            {payNum('bKash', '01331707900')}
-            {payNum('Nagad', '01616595386')}
+            {payNum('bKash', '01331707900', '#E2136E', 'bg-gradient-to-br from-pink-500 to-[#E2136E]')}
+            {payNum('Nagad', '01616595386', '#F1471D', 'bg-gradient-to-br from-orange-400 to-[#F1471D]')}
           </div>
         </div>
 

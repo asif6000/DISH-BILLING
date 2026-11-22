@@ -20,13 +20,23 @@ const api = {
       const listener = () => cb()
       ipcRenderer.on('auth:expired', listener)
       return () => ipcRenderer.removeListener('auth:expired', listener)
+    },
+    // pushed by the main process when this user's permissions change live
+    // (Security → Roles / per-user grants) — no logout/login needed
+    onPermissionsUpdated: (cb: () => void) => {
+      const listener = () => cb()
+      ipcRenderer.on('permissions:updated', listener)
+      return () => ipcRenderer.removeListener('permissions:updated', listener)
     }
   },
   users: {
     list: () => invoke('users:list'),
     create: (d: any) => invoke('users:create', d),
     update: (id: number, d: any) => invoke('users:update', id, d),
-    delete: (id: number) => invoke('users:delete', id)
+    delete: (id: number) => invoke('users:delete', id),
+    permsGet: (id: number) => invoke('permissions:get', id),
+    permsSet: (id: number, grants: any[]) => invoke('permissions:set', id, grants),
+    permsAudit: (id: number) => invoke('permissions:audit', id)
   },
   roles: {
     list: () => invoke('roles:list'),
@@ -53,6 +63,7 @@ const api = {
     list: (params?: any) => invoke('customers:list', params),
     get: (id: number) => invoke('customers:get', id),
     create: (d: any) => invoke('customers:create', d),
+    import: (rows: any[], areaId?: number) => invoke('customers:import', rows, areaId),
     update: (id: number, d: any) => invoke('customers:update', id, d),
     setStatus: (id: number, status: string, note?: string) => invoke('customers:setStatus', id, status, note),
     transfer: (id: number, d: any) => invoke('customers:transfer', id, d),
@@ -86,7 +97,11 @@ const api = {
     sync: () => invoke('accounts:sync'),
     signup: (d: any) => invoke('accounts:signup', d),
     forgot: (username: string) => invoke('accounts:forgot', username),
-    checkRemote: () => invoke('accounts:checkRemote')
+    checkRemote: () => invoke('accounts:checkRemote'),
+    remoteUsers: () => invoke('accounts:remoteUsers')
+  },
+  collectors: {
+    quickAdd: (name: string, mobile?: string) => invoke('collectors:quickAdd', name, mobile)
   },
   dashboard: {
     stats: (month: string) => invoke('dashboard:stats', month),
@@ -102,6 +117,8 @@ const api = {
     reseller: (month: string) => invoke('reports:reseller', month),
     package: (month: string) => invoke('reports:package', month),
     dueList: (month: string) => invoke('reports:dueList', month),
+    billList: (month: string, filters?: any) => invoke('reports:billList', month, filters || {}),
+    customerBill: (customerId: number, month: string) => invoke('reports:customerBill', customerId, month),
     profitLoss: (from: string, to: string) => invoke('reports:profitLoss', from, to),
     balanceSheet: () => invoke('reports:balanceSheet'),
     transactions: (type: string, from: string, to: string) => invoke('reports:transactions', type, from, to),
@@ -121,6 +138,8 @@ const api = {
   },
   inventory: {
     createPurchase: (d: any) => invoke('purchases:create', d),
+    listFull: () => invoke('purchases:listFull'),
+    findOrCreateProduct: (d: any) => invoke('products:findOrCreate', d),
     getPurchase: (id: number) => invoke('purchases:get', id),
     stockMove: (d: any) => invoke('stock:move', d)
   },
@@ -129,7 +148,15 @@ const api = {
     txns: (id: number) => invoke('resellers:txns', id)
   },
   transactions: {
-    create: (d: any) => invoke('transactions:create', d)
+    list: (params?: any) => invoke('transactions:list', params || {}),
+    create: (d: any) => invoke('transactions:create', d),
+    update: (id: number, d: any) => invoke('transactions:update', id, d),
+    delete: (id: number) => invoke('transactions:delete', id),
+    mainBalance: () => invoke('accounts:mainBalance')
+  },
+  companyProfile: {
+    get: () => invoke('settings:companyProfile'),
+    update: (d: any) => invoke('settings:companyProfileUpdate', d)
   },
   accountTransfers: {
     create: (d: any) => invoke('account_transfers:create', d)
@@ -149,6 +176,7 @@ const api = {
   print: {
     preview: (html: string, title?: string) => invoke('print:preview', html, title),
     silent: (html: string, printer?: string) => invoke('print:silent', html, printer),
+    savePdf: (html: string, defaultName?: string) => invoke('print:pdf', html, defaultName || 'document.pdf'),
     getPrinters: () => invoke('print:getPrinters')
   },
   app: {

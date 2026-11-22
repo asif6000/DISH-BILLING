@@ -41,7 +41,7 @@ function decorate(def: any, rows: any[]): any[] {
 export function registerGenericIpc(): void {
   ipcMain.handle('db:list', (e, key: string, params: ListParams = {}): ListResult => {
     const def = entityDef(key)
-    requirePermission(e, key)
+    requirePermission(e, key, 'view')
     const db = getDb()
     const page = Math.max(1, params.page || 1)
     const pageSize = params.all ? 100000 : Math.min(200, Math.max(5, params.pageSize || 20))
@@ -75,15 +75,20 @@ export function registerGenericIpc(): void {
 
   ipcMain.handle('db:get', (e, key: string, id: number) => {
     const def = entityDef(key)
-    requirePermission(e, key)
+    requirePermission(e, key, 'view')
     const row = getDb().prepare(`SELECT * FROM ${def.table} WHERE id = ?`).get(id)
     return row ? decorate(def, [row])[0] : null
   })
 
   ipcMain.handle('db:create', (e, key: string, data: any) => {
     const def = entityDef(key)
-    const s = requirePermission(e, key)
+    const s = requirePermission(e, key, 'create')
     const db = getDb()
+    // prevent duplicate expense category names (server-side, not just UI)
+    if (key === 'expense_categories' && data.name) {
+      const dup = db.prepare('SELECT id FROM expense_categories WHERE name COLLATE NOCASE = ?').get(String(data.name).trim())
+      if (dup) throw new Error('DUPLICATE_CATEGORY')
+    }
     const fields = def.fields.filter((f) => !f.hideInForm || data[f.name] !== undefined)
     const names: string[] = []
     const values: any[] = []
@@ -104,6 +109,10 @@ export function registerGenericIpc(): void {
       names.push(f.name)
     }
     if (!names.length) throw new Error('NO_FIELDS')
+    // collectors created from the entity page are owned by their creator admin
+    if (key === 'collectors' && !names.includes('owner_admin_id') && !s.permissions.includes('all')) {
+      names.push('owner_admin_id'); values.push(s.userId)
+    }
     const r = db.prepare(`INSERT INTO ${def.table} (${names.join(',')}) VALUES (${names.map(() => '?').join(',')})`).run(...values)
     logActivity(s.userId, s.username, 'create', key, String(r.lastInsertRowid))
     return r.lastInsertRowid
@@ -111,8 +120,12 @@ export function registerGenericIpc(): void {
 
   ipcMain.handle('db:update', (e, key: string, id: number, data: any) => {
     const def = entityDef(key)
-    const s = requirePermission(e, key)
+    const s = requirePermission(e, key, 'edit')
     const db = getDb()
+    if (key === 'expense_categories' && data.name) {
+      const dup = db.prepare('SELECT id FROM expense_categories WHERE name COLLATE NOCASE = ? AND id != ?').get(String(data.name).trim(), id)
+      if (dup) throw new Error('DUPLICATE_CATEGORY')
+    }
     const sets: string[] = []
     const values: any[] = []
     for (const f of def.fields) {
@@ -137,7 +150,7 @@ export function registerGenericIpc(): void {
 
   ipcMain.handle('db:delete', (e, key: string, id: number) => {
     const def = entityDef(key)
-    const s = requirePermission(e, key)
+    const s = requirePermission(e, key, 'delete')
     getDb().prepare(`DELETE FROM ${def.table} WHERE id = ?`).run(id)
     logActivity(s.userId, s.username, 'delete', key, String(id))
     return true
@@ -155,7 +168,15 @@ export function registerGenericIpc(): void {
     } else if (def.table === 'staff') {
       sql = `SELECT id, name || ' (' || designation || ')' AS label FROM staff WHERE status = 'active' ORDER BY name`
     } else if (def.table === 'collectors') {
-      sql = `SELECT c.id, s.name AS label FROM collectors c JOIN staff s ON s.id = c.staff_id WHERE c.status = 'active' ORDER BY s.name`
+      // ownership: admins see their own collectors + company-wide (NULL owner);
+      // SUPER_ADMIN ('all') sees all. Managers/Collectors never appear here.
+      const s = requirePermission(e, 'collectors', 'view')
+      const ownerFilter = s.permissions.includes('all') ? ''
+        : ' AND (c.owner_admin_id IS NULL OR c.owner_admin_id = ' + Number(s.userId) + ')'
+      sql = `SELECT c.id, s.name || COALESCE(' — ' || NULLIF(s.mobile, ''), '') AS label
+        FROM collectors c JOIN staff s ON s.id = c.staff_id
+        WHERE c.status = 'active'${ownerFilter} ORDER BY s.name`
+      return db.prepare(sql).all()
     } else if (def.table === 'network_devices') {
       sql = `SELECT id, name || ' (' || type || ')' AS label FROM network_devices ORDER BY name`
     } else if (def.table === 'accounts') {
@@ -166,6 +187,25 @@ export function registerGenericIpc(): void {
       sql = `SELECT id, name AS label FROM ${def.table} WHERE status = 'active' ORDER BY name`
     }
     return db.prepare(sql).all()
+  })
+
+  // Quick-add a collector from the payment form (creates staff + collector in one step)
+  ipcMain.handle('collectors:quickAdd', (e, name: string, mobile?: string) => {
+    const s = requirePermission(e, 'collectors')
+    const db = getDb()
+    if (!name || !name.trim()) throw new Error('MISSING_FIELDS')
+    let staff = db.prepare('SELECT id FROM staff WHERE LOWER(TRIM(name)) = LOWER(?)').get(name.trim()) as any
+    if (!staff) {
+      const r = db.prepare("INSERT INTO staff (name, mobile, designation, status) VALUES (?, ?, 'Collector', 'active')").run(name.trim(), (mobile || '').trim() || null)
+      staff = { id: Number(r.lastInsertRowid) }
+    }
+    let col = db.prepare('SELECT id FROM collectors WHERE staff_id = ?').get(staff.id) as any
+    if (!col) {
+      const r = db.prepare("INSERT INTO collectors (staff_id, status, owner_admin_id) VALUES (?, 'active', ?)").run(staff.id, s.userId)
+      col = { id: Number(r.lastInsertRowid) }
+    }
+    logActivity(s.userId, s.username, 'quick_add_collector', 'collectors', name.trim())
+    return { id: col.id, label: name.trim() }
   })
 
   // collector area assignment

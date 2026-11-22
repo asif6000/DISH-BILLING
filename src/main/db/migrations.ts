@@ -559,5 +559,121 @@ export const MIGRATIONS: string[] = [
     FROM login_history lh LEFT JOIN users u ON u.id = lh.user_id;
   DROP TABLE login_history;
   ALTER TABLE login_history_new RENAME TO login_history;
+  `,
+
+  `-- Version 4: per-user 7-day free trial (users.trial_ends).
+  -- Existing users get a 7-day trial counted from this update;
+  -- new users get 7 days from creation/approval. A purchased
+  -- subscription (global sub_expire) always covers all users.
+  ALTER TABLE users ADD COLUMN trial_ends TEXT;
+  UPDATE users SET trial_ends = datetime('now', '+7 days');
+  `,
+
+  `-- Version 5: classic-menu pages — PPPoE users, message requests, payment withdraws
+  CREATE TABLE pppoe_users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    password TEXT,
+    customer_id INTEGER REFERENCES customers(id),
+    mobile TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    notes TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE message_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reseller_id INTEGER REFERENCES resellers(id),
+    quantity INTEGER NOT NULL DEFAULT 0,
+    note TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE payment_withdraws (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reseller_id INTEGER REFERENCES resellers(id),
+    amount NUMERIC NOT NULL DEFAULT 0,
+    method TEXT,
+    note TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  `,
+
+  `-- Version 6: reset the Collector role to a proper staff permission set
+  -- (it previously had all permissions, making approved users admin-like).
+  UPDATE roles SET permissions = '["dashboard","areas","customers","payments","collectors","cash_deposits","reports","messaging","complaints","packages","connections","messages","sms_templates","customer_documents"]'
+    WHERE name = 'Collector' AND is_system = 1;
+  `,
+
+  `-- Version 7: RBAC hierarchy — SUPER_ADMIN > ADMIN > MANAGER > COLLECTOR
+  -- 1) SUPER_ADMIN system role (only 'all' permission holder)
+  INSERT INTO roles (name, permissions, is_system) VALUES ('SUPER_ADMIN', '["all"]', 1);
+  -- 2) promote the existing seeded Administrator account to SUPER_ADMIN (credentials preserved)
+  UPDATE users SET role_id = (SELECT id FROM roles WHERE name = 'SUPER_ADMIN')
+    WHERE username = 'admin' AND role_id = (SELECT id FROM roles WHERE name = 'Administrator');
+  -- 3) Administrator role = ADMIN: full operations + user management (Manager/Collector),
+  --    but NOT 'security'/'settings' (SUPER_ADMIN-only) and NOT 'all'
+  UPDATE roles SET permissions = '["dashboard","areas","customers","billing","payments","collectors","cash_deposits","reports","messaging","complaints","packages","connections","messages","sms_templates","customer_documents","staff","resellers","inventory","accounts","users"]'
+    WHERE name = 'Administrator' AND is_system = 1;
+  -- 4) account ownership tracking (who created the account — audit)
+  ALTER TABLE users ADD COLUMN created_by TEXT;
+  ALTER TABLE users ADD COLUMN owner_admin_id INTEGER REFERENCES users(id);
+  UPDATE users SET created_by = 'admin' WHERE created_by IS NULL AND username != 'admin';
+  `,
+
+  `-- Version 8: dynamic per-user permissions + permission audit trail
+  CREATE TABLE user_permissions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    permission_key TEXT NOT NULL,
+    can_delegate INTEGER NOT NULL DEFAULT 1,
+    granted_by INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, permission_key)
+  );
+  CREATE INDEX idx_user_permissions_user ON user_permissions(user_id);
+  CREATE TABLE permission_audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_id INTEGER NOT NULL,
+    target_user_id INTEGER NOT NULL,
+    permission_key TEXT NOT NULL,
+    action TEXT NOT NULL,            -- grant / revoke / delegate_on / delegate_off
+    old_value TEXT,
+    new_value TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  `,
+
+  `-- Version 9: collector ownership (Admin sees own collectors; NULL = company-wide)
+  ALTER TABLE collectors ADD COLUMN owner_admin_id INTEGER REFERENCES users(id);
+  `,
+
+  `-- Version 10: product image + trusted purchase timestamp support
+  ALTER TABLE products ADD COLUMN image TEXT;
+  ALTER TABLE purchases ADD COLUMN created_local_time TEXT;
+  `,
+
+  `-- Version 11: expense auto date/time (Asia/Dhaka trusted timestamp)
+  ALTER TABLE transactions ADD COLUMN created_local_time TEXT;
+  `,
+
+  `-- Version 12: collection history snapshots (due before/after per payment)
+  ALTER TABLE payments ADD COLUMN due_before REAL;
+  ALTER TABLE payments ADD COLUMN due_after REAL;
+  ALTER TABLE payments ADD COLUMN created_local_time TEXT;
+  `,
+
+  `-- Version 13: company profile permission for Administrator (edit company name/mobile)
+  UPDATE roles SET permissions = '["dashboard","areas","customers","billing","payments","collectors","cash_deposits","reports","messaging","complaints","packages","connections","messages","sms_templates","customer_documents","staff","resellers","inventory","accounts","users","company_profile"]'
+    WHERE name = 'Administrator' AND is_system = 1;
+  `,
+
+  `-- Version 14: extended company profile keys (alternative mobile, email, logo)
+  -- settings is a key/value table: setSetting() upserts (INSERT for new keys,
+  -- UPDATE for existing) so company data persists across restarts, one row per key.
+  -- OR IGNORE keeps this idempotent for databases that already have some keys.
+  INSERT OR IGNORE INTO settings (key, value) VALUES ('company_mobile_alt', '');
+  INSERT OR IGNORE INTO settings (key, value) VALUES ('company_email', '');
+  INSERT OR IGNORE INTO settings (key, value) VALUES ('company_logo', '');
   `
 ]

@@ -8,8 +8,9 @@
 import { ipcMain } from 'electron'
 import bcrypt from 'bcryptjs'
 import { getDb, logActivity } from '../db'
+import { requirePermission } from './auth'
 import { requireAuth, sessions } from './auth'
-import { sbAnonFetch, supabaseConfigured } from '../subscription'
+import { sbAnonFetch, supabaseConfigured, grantApprovalTrial } from '../subscription'
 
 const PENDING_ROLE = 'Collector'
 
@@ -22,11 +23,11 @@ function nowIso(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
-// Post a user to Supabase (insert; if the username already exists the 409 is
-// silently ignored). NOTE: do NOT use on_conflict/ignore-duplicates here — the
-// combination with the RLS insert policy fails (42501). No password hash is sent.
-async function supabaseUpsertUser(u: { username: string; full_name: string | null; mobile: string | null; status: string }): Promise<void> {
-  if (!supabaseConfigured()) return
+// Post a user to Supabase (insert). NOTE: do NOT use on_conflict/ignore-duplicates
+// here — the combination with the RLS insert policy fails (42501). No password hash
+// is sent. A 409 (username already exists remotely) counts as success.
+async function supabaseUpsertUser(u: { username: string; full_name: string | null; mobile: string | null; status: string }): Promise<{ ok: boolean; existed?: boolean; error?: string }> {
+  if (!supabaseConfigured()) return { ok: false, error: 'SUPABASE_NOT_CONFIGURED' }
   try {
     await sbAnonFetch('/rest/v1/app_users', {
       method: 'POST',
@@ -38,7 +39,15 @@ async function supabaseUpsertUser(u: { username: string; full_name: string | nul
         status: u.status === 'active' ? 'approved' : 'pending'
       })
     })
-  } catch { /* offline / already exists (409) — non-fatal */ }
+    return { ok: true }
+  } catch (err: any) {
+    const m = String(err?.message || err || '')
+    // already exists remotely (e.g. re-signup of the same username) — not an error
+    if (m.includes('409') || m.includes('duplicate key')) return { ok: true, existed: true }
+    // real failure (missing SQL part, permission denied, offline...) — surface it
+    logActivity(null, u.username, 'supabase_sync_failed', 'security', m.slice(0, 200))
+    return { ok: false, error: m.slice(0, 200) }
+  }
 }
 
 async function requestPasswordReset(username: string): Promise<void> {
@@ -84,8 +93,9 @@ export function registerAccountsIpc(): void {
     db.prepare('INSERT INTO users (username, password_hash, full_name, mobile, role_id, status) VALUES (?,?,?,?,?,?)')
       .run(username, bcrypt.hashSync(password, 10), fullName, mobile || null, role.id, 'pending')
     logActivity(null, username, 'account_signup', 'security', 'pending approval')
-    await supabaseUpsertUser({ username, full_name: fullName, mobile: mobile || null, status: 'pending' })
-    return true
+    // push to Supabase as 'pending'; the app also retries on every checkRemote poll
+    const push = await supabaseUpsertUser({ username, full_name: fullName, mobile: mobile || null, status: 'pending' })
+    return { ok: true, synced: push.ok, syncError: push.error || null }
   })
 
   // forgot password request (no session)
@@ -102,12 +112,30 @@ export function registerAccountsIpc(): void {
 
   // Poll (no auth — runs on the login screen): sync users, then apply remote
   // approvals and password resets to the local database.
+
+  // Read remote statuses. Prefers the SECURITY DEFINER RPC (immune to view/RLS
+  // misconfiguration); falls back to the app_user_status view if the RPC is
+  // not installed yet.
+  async function fetchRemoteStatuses(): Promise<any[]> {
+    try {
+      const res = await sbAnonFetch('/rest/v1/rpc/get_app_user_status')
+      return (await res.json()) as any[]
+    } catch (err: any) {
+      const m = String(err?.message || '')
+      // RPC function not installed (404/42883) → fall back to the view
+      if (m.includes('404') || m.includes('42883') || m.includes('does not exist')) {
+        const res = await sbAnonFetch('/rest/v1/app_user_status?select=username,status,reset_hash')
+        return (await res.json()) as any[]
+      }
+      throw err
+    }
+  }
+
   ipcMain.handle('accounts:checkRemote', async () => {
     if (!supabaseConfigured()) return { ok: false, activated: [], reset: [] }
     try {
       await syncLocalUsers()
-      const res = await sbAnonFetch('/rest/v1/app_user_status?select=username,status,reset_hash')
-      const rows = (await res.json()) as any[]
+      const rows = await fetchRemoteStatuses()
       const remote = new Map<string, { status: string; reset_hash: string | null }>()
       for (const r of rows || []) remote.set(String(r.username).trim().toLowerCase(), { status: r.status, reset_hash: r.reset_hash || null })
 
@@ -118,10 +146,11 @@ export function registerAccountsIpc(): void {
       for (const u of locals) {
         const r = remote.get(u.username.toLowerCase())
         if (!r) continue
-        // approved pending signup -> activate locally
+        // approved pending signup -> activate locally + 7-day free trial
         if (u.status === 'pending' && r.status === 'approved') {
-          db.prepare("UPDATE users SET status = 'active' WHERE id = ?").run(u.id)
+          db.prepare("UPDATE users SET status = 'active', trial_ends = datetime('now','+7 days') WHERE id = ?").run(u.id)
           logActivity(null, u.username, 'account_approved', 'security')
+          grantApprovalTrial()
           activated.push(u.username)
         }
         // pending signup rejected remotely -> remove the local pending user
@@ -141,8 +170,24 @@ export function registerAccountsIpc(): void {
         }
       }
       return { ok: true, activated, reset }
+    } catch (err: any) {
+      // surface WHY the remote check failed (missing view/grant, offline, 401...)
+      const m = String(err?.message || err || '')
+      if (m) logActivity(null, null, 'supabase_check_failed', 'security', m.slice(0, 200))
+      return { ok: false, error: m.slice(0, 200), activated: [], reset: [] }
+    }
+  })
+
+  // Supabase user list (all app_users: pending + approved + rejected)
+  // for the admin User Management page
+  ipcMain.handle('accounts:remoteUsers', async (e) => {
+    requirePermission(e, 'security')
+    if (!supabaseConfigured()) return []
+    try {
+      const res = await sbAnonFetch('/rest/v1/rpc/get_app_users')
+      return (await res.json()) as any[]
     } catch {
-      return { ok: false, activated: [], reset: [] }
+      return []
     }
   })
 

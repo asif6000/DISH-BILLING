@@ -59,8 +59,9 @@ export default function Login({ onLogin }: { onLogin: (u: UserInfo) => void }) {
     if (!suUser.trim() || !suName.trim() || suPass.length < 6) return
     setBusy(true)
     try {
-      await window.api.userAccounts.signup({ username: suUser.trim(), fullName: suName.trim(), mobile: suMobile.trim(), password: suPass })
+      const r: any = await window.api.userAccounts.signup({ username: suUser.trim(), fullName: suName.trim(), mobile: suMobile.trim(), password: suPass })
       setSignupSent(true)
+      if (r?.synced === false) toast.push('error', t('signupNotSynced'))
     } catch (e) {
       const m = errMsg(e)
       toast.push('error', m.includes('USERNAME_EXISTS') ? t('usernameExists')
@@ -119,7 +120,6 @@ export default function Login({ onLogin }: { onLogin: (u: UserInfo) => void }) {
               <KeyRound size={13} /> {t('forgotPassword')}
             </button>
           </div>
-          <p className="text-[11px] text-slate-400 text-center">{t('defaultAdminNotice')}</p>
         </form>
       </div>
 

@@ -31,7 +31,7 @@ function creditAccount(db: any, amount: number, date: string, description: strin
 export function registerRenewalIpc(): void {
   // List customers with package + validity for the renewal page
   ipcMain.handle('renewal:list', (e, params: any = {}) => {
-    requirePermission(e, 'payments')
+    requirePermission(e, 'payments', 'view')
     const db = getDb()
     const q = String(params.q || '').trim()
     const filter = params.filter || 'all'
@@ -64,7 +64,7 @@ export function registerRenewalIpc(): void {
 
   // Renew: collect payment + extend validity (+ reactivate expired customer), in one transaction
   ipcMain.handle('renewal:renew', (e, input: any) => {
-    const s = requirePermission(e, 'payments')
+    const s = requirePermission(e, 'payments', 'collect')
     const db = getDb()
     const months = Math.max(1, Math.min(36, parseInt(input.months, 10) || 1))
     const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(input.customerId) as any

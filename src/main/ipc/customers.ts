@@ -18,7 +18,7 @@ const CUSTOMER_SELECT = `
 
 export function registerCustomerIpc(): void {
   ipcMain.handle('customers:list', (e, params: CustomerFilters = {}) => {
-    requirePermission(e, 'customers')
+    requirePermission(e, 'customers', 'view')
     const db = getDb()
     const page = Math.max(1, params.page || 1)
     const pageSize = params.all ? 100000 : Math.min(200, Math.max(5, params.pageSize || 20))
@@ -56,7 +56,7 @@ export function registerCustomerIpc(): void {
   })
 
   ipcMain.handle('customers:get', (e, id: number) => {
-    requirePermission(e, 'customers')
+    requirePermission(e, 'customers', 'view')
     const db = getDb()
     const customer = db.prepare(`${CUSTOMER_SELECT} WHERE c.id = ?`).get(id)
     if (!customer) return null
@@ -69,7 +69,7 @@ export function registerCustomerIpc(): void {
   })
 
   ipcMain.handle('customers:create', (e, data: any) => {
-    const s = requirePermission(e, 'customers')
+    const s = requirePermission(e, 'customers', 'create')
     const db = getDb()
     if (!data.name || !data.mobile) throw new Error('REQUIRED:name,mobile')
     if (!/^01[3-9]\d{8}$/.test(String(data.mobile).trim())) throw new Error('INVALID_MOBILE')
@@ -89,8 +89,54 @@ export function registerCustomerIpc(): void {
     return customerId
   })
 
+  // Excel import: bulk create customers (no bills/payments generated).
+  // Server-side validation: name required, mobile normalized (Bangla digits ok),
+  // duplicates rejected (existing DB mobiles + duplicates inside the file).
+  ipcMain.handle('customers:import', (e, rows: { name?: string; address?: string; mobile?: string }[], areaId?: number) => {
+    const s = requirePermission(e, 'customers', 'create')
+    const db = getDb()
+    const normalizeMobile = (m: any): string => {
+      const bn = '০১২৩৪৫৬৭৮৯'
+      let d = String(m || '').trim()
+      d = d.replace(/[০-৯]/g, (c) => String(bn.indexOf(c)))
+      d = d.replace(/[^\d]/g, '')
+      if (d.length === 13 && d.startsWith('88')) d = d.slice(2)
+      if (d.length === 11 && d.startsWith('1')) d = '0' + d
+      return d
+    }
+    const existing = new Set<string>((db.prepare('SELECT mobile FROM customers').all() as any[]).map((r) => normalizeMobile(r.mobile)))
+    let imported = 0, duplicates = 0, invalid = 0
+    const errors: string[] = []
+    db.exec('BEGIN')
+    try {
+      const seen = new Set<string>()
+      for (const row of rows || []) {
+        const name = String(row?.name || '').trim()
+        const address = String(row?.address || '').trim()
+        const mobile = normalizeMobile(row?.mobile)
+        if (!name || !/^01[3-9]\d{8}$/.test(mobile)) { invalid++; errors.push(`${name || mobile || '(empty)'} — invalid`); continue }
+        if (existing.has(mobile) || seen.has(mobile)) { duplicates++; errors.push(`${name} (${mobile}) — duplicate`); continue }
+        seen.add(mobile)
+        const code = nextSeq('customer_seq', 5, 'AVA-')
+        db.prepare(`INSERT INTO customers (code, name, mobile, address, area_id, connection_date, status) VALUES (?,?,?,?,?,?, 'active')`)
+          .run(code, name, mobile, address || null, areaId || null, today())
+        const customerId = Number((db.prepare('SELECT id FROM customers WHERE code = ?').get(code) as any).id)
+        db.prepare('INSERT INTO customer_connections (customer_id, action, to_value, date, note, created_by) VALUES (?,?,?,?,?,?)')
+          .run(customerId, 'new', 'connection', today(), 'Excel import', s.username)
+        existing.add(mobile)
+        imported++
+      }
+      db.exec('COMMIT')
+    } catch (err) {
+      db.exec('ROLLBACK')
+      throw err
+    }
+    logActivity(s.userId, s.username, 'import_customers', 'customers', `imported:${imported},duplicates:${duplicates},invalid:${invalid}`)
+    return { imported, duplicates, invalid, total: (rows || []).length, errors: errors.slice(0, 20) }
+  })
+
   ipcMain.handle('customers:update', (e, id: number, data: any) => {
-    const s = requirePermission(e, 'customers')
+    const s = requirePermission(e, 'customers', 'edit')
     const db = getDb()
     const old = db.prepare('SELECT * FROM customers WHERE id = ?').get(id) as any
     if (!old) throw new Error('NOT_FOUND')
@@ -116,7 +162,7 @@ export function registerCustomerIpc(): void {
   })
 
   ipcMain.handle('customers:setStatus', (e, id: number, status: string, note?: string) => {
-    const s = requirePermission(e, 'customers')
+    const s = requirePermission(e, 'customers', 'edit')
     const db = getDb()
     const allowed = ['active', 'inactive', 'disconnected', 'free', 'expired']
     if (!allowed.includes(status)) throw new Error('INVALID_STATUS')
@@ -131,7 +177,7 @@ export function registerCustomerIpc(): void {
   })
 
   ipcMain.handle('customers:transfer', (e, id: number, data: { area_id: number; sub_area_id?: number; road_id?: number; address?: string }) => {
-    const s = requirePermission(e, 'customers')
+    const s = requirePermission(e, 'customers', 'edit')
     const db = getDb()
     const old = db.prepare(`${CUSTOMER_SELECT} WHERE c.id = ?`).get(id) as any
     if (!old) throw new Error('NOT_FOUND')
@@ -146,7 +192,7 @@ export function registerCustomerIpc(): void {
   })
 
   ipcMain.handle('customers:shift', (e, id: number, address: string) => {
-    const s = requirePermission(e, 'customers')
+    const s = requirePermission(e, 'customers', 'edit')
     const db = getDb()
     db.prepare('UPDATE customers SET address = ? WHERE id = ?').run(address, id)
     db.prepare('INSERT INTO customer_connections (customer_id, action, to_value, date, note, created_by) VALUES (?,?,?,?,?,?)')
@@ -156,7 +202,7 @@ export function registerCustomerIpc(): void {
   })
 
   ipcMain.handle('customers:bulkImport', (e, rows: any[]) => {
-    const s = requirePermission(e, 'customers')
+    const s = requirePermission(e, 'customers', 'create')
     const db = getDb()
     let imported = 0
     const errors: string[] = []
@@ -187,7 +233,7 @@ export function registerCustomerIpc(): void {
   })
 
   ipcMain.handle('customers:dueList', (e) => {
-    requirePermission(e, 'customers')
+    requirePermission(e, 'customers', 'view')
     return getDb().prepare(`${CUSTOMER_SELECT} WHERE c.status = 'active'
       AND (SELECT SUM(b.total - b.paid) FROM bills b WHERE b.customer_id = c.id AND b.status != 'cancelled') > 0
       ORDER BY total_due DESC`).all()

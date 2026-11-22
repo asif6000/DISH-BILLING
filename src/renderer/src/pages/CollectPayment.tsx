@@ -1,14 +1,16 @@
 import React, { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Banknote, Smartphone, Building, RefreshCw } from 'lucide-react'
 import { useI18n } from '../lib/i18n'
 import { money, todayStr } from '../lib/format'
-import { Modal, useToast, PageHeader, useReflist } from '../components/ui'
+import { Modal, useToast, PageHeader } from '../components/ui'
+import { CollectorPicker, useCollectors } from '../components/CollectorPicker'
 import { errMsg } from '../lib/api'
-import { receiptHTML, thermalReceiptHTML } from '../lib/printDocs'
 
 export default function CollectPayment({ mode }: { mode?: 'refund' }) {
   const { t, lang } = useI18n()
   const toast = useToast()
+  const nav = useNavigate()
   const [f, setF] = useState<any>({
     customerId: '', amount: '', method: 'cash', reference: '', note: '', date: todayStr(), type: mode === 'refund' ? 'refund' : 'bill', collectorId: ''
   })
@@ -16,7 +18,21 @@ export default function CollectPayment({ mode }: { mode?: 'refund' }) {
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState<any>(null)
   const [busy, setBusy] = useState(false)
-  const collectors = useReflist('collectors')
+  const [formErr, setFormErr] = useState('')
+  const [attempted, setAttempted] = useState(false)
+  const { list: collectors } = useCollectors()
+
+  // if the logged-in user is a collector (name matches a collector record),
+  // auto-attribute the collection to them
+  useEffect(() => {
+    if (!collectors.length) return
+    window.api.auth.check().then((r: any) => {
+      const u = r?.user
+      if (!u?.fullName) return
+      const me = collectors.find((c: any) => (c.label || '').trim().toLowerCase() === String(u.fullName).trim().toLowerCase())
+      if (me) setF((x: any) => ({ ...x, collectorId: String(me.id) }))
+    }).catch(() => {})
+  }, [collectors])
 
   useEffect(() => {
     let alive = true
@@ -37,9 +53,15 @@ export default function CollectPayment({ mode }: { mode?: 'refund' }) {
   ]
 
   const submit = async () => {
-    if (!selected) { toast.push('error', lang === 'bn' ? 'গ্রাহক নির্বাচন করুন' : 'Select a customer'); return }
+    setAttempted(true)
+    setFormErr('')
+    // clear validation messages — never fail silently
+    if (!selected) { setFormErr(lang === 'bn' ? 'আগে বাম দিকের লিস্ট থেকে গ্রাহক নির্বাচন করুন' : 'Select a customer from the list on the left first'); return }
     const amt = Number(f.amount)
-    if (!amt || amt <= 0) { toast.push('error', lang === 'bn' ? 'সঠিক পরিমাণ দিন' : 'Enter a valid amount'); return }
+    if (!amt || amt <= 0) { setFormErr(lang === 'bn' ? 'সঠিক পরিমাণ দিন (০ এর বেশি)' : 'Enter a valid amount (greater than zero)'); return }
+    if (!f.date || isNaN(new Date(f.date).getTime())) { setFormErr(lang === 'bn' ? 'সঠিক তারিখ দিন' : 'Enter a valid date'); return }
+    if (!f.method) { setFormErr(lang === 'bn' ? 'পেমেন্ট পদ্ধতি নির্বাচন করুন' : 'Select a payment method'); return }
+    if (!f.type) { setFormErr(lang === 'bn' ? 'পেমেন্ট ধরন নির্বাচন করুন' : 'Select a payment type'); return }
     setBusy(true)
     try {
       let result: any
@@ -51,13 +73,10 @@ export default function CollectPayment({ mode }: { mode?: 'refund' }) {
           note: f.note, date: f.date, type: f.type, collectorId: f.collectorId || null
         })
       }
-      // fetch receipt and offer print
-      const list = await window.api.payments.list({ page: 1, pageSize: 1, search: result.receiptNo })
-      if (list.rows?.[0]) {
-        const d = await window.api.payments.receipt(list.rows[0].id)
-        await window.api.print.preview(receiptHTML(d.payment, d.customer, d.company), t('receipt') + ' ' + result.receiptNo)
-      }
-      toast.push('success', `${t('receipt')}: ${result.receiptNo}`)
+      // payment saved — show success notification with receipt number.
+      // NO automatic receipt popup/print: users print receipts manually from
+      // Collection History or the Monthly Bill Statement (kept intact).
+      toast.push('success', `${t('saved')} — ${t('receipt')}: ${result.receiptNo}`)
       setF({ customerId: '', amount: '', method: 'cash', reference: '', note: '', date: todayStr(), type: mode === 'refund' ? 'refund' : 'bill' })
       setSelected(null)
       setSearch('')
@@ -82,8 +101,8 @@ export default function CollectPayment({ mode }: { mode?: 'refund' }) {
           <input className="input mb-2" placeholder={t('search') + ' (name / code / mobile)'} value={search} onChange={(e) => setSearch(e.target.value)} />
           <div className="max-h-80 overflow-y-auto space-y-1">
             {customers.map((c) => (
-              <button key={c.id} onClick={() => { setSelected(c); if (!f.amount) set('amount', mode === 'refund' ? c.advance_balance : c.total_due) }}
-                className={`w-full text-left px-3 py-2 rounded-lg text-sm flex items-center justify-between transition ${selected?.id === c.id ? 'bg-brand-600 text-white' : 'hover:bg-slate-100 dark:hover:bg-slate-800'}`}>
+              <button key={c.id} onClick={() => { setSelected(c); setFormErr(''); if (!f.amount) set('amount', mode === 'refund' ? c.advance_balance : c.total_due) }}
+                className={`w-full text-left px-3 py-2 rounded-lg text-sm flex items-center justify-between transition ${selected?.id === c.id ? 'bg-brand-600 text-white' : 'hover:bg-slate-100 dark:hover:bg-slate-800'} ${attempted && !selected ? 'ring-1 ring-amber-300' : ''}`}>
                 <span><b>{c.name}</b> <span className="opacity-60 font-mono text-xs">{c.code}</span></span>
                 <span className="text-xs">
                   {mode === 'refund'
@@ -141,11 +160,8 @@ export default function CollectPayment({ mode }: { mode?: 'refund' }) {
                   <input className="input" placeholder="TrxID" value={f.reference} onChange={(e) => set('reference', e.target.value)} />
                 </div>
                 <div className="col-span-2">
-                  <label className="label">{t('collectors_all').replace(/s$/, '')} ({lang === 'bn' ? 'ঐচ্ছিক' : 'optional'})</label>
-                  <select className="input" value={f.collectorId || ''} onChange={(e) => set('collectorId', e.target.value)}>
-                    <option value="">—</option>
-                    {collectors.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
-                  </select>
+                  <CollectorPicker label={`${t('collectors_all').replace(/s$/, '')} (${lang === 'bn' ? 'ঐচ্ছিক' : 'optional'})`}
+                    value={f.collectorId || ''} onChange={(v) => set('collectorId', v)} />
                 </div>
               </>
             )}
@@ -154,9 +170,10 @@ export default function CollectPayment({ mode }: { mode?: 'refund' }) {
               <input className="input" value={f.note} onChange={(e) => set('note', e.target.value)} />
             </div>
           </div>
-          <div className="flex justify-end gap-2 mt-4">
-            <button className="btn-primary" onClick={submit} disabled={busy || !selected}>
-              <RefreshCw size={15} /> {busy ? t('loading') : (mode === 'refund' ? t('refundAdvance') : t('collectNow'))}
+          <div className="flex justify-end gap-2 mt-4 items-center">
+            {formErr && <span className="text-xs text-red-500 mr-auto">⚠ {formErr}</span>}
+            <button className="btn-primary" onClick={submit} disabled={busy}>
+              <RefreshCw size={15} className={busy ? 'animate-spin' : ''} /> {busy ? (lang === 'bn' ? 'প্রসেসিং...' : 'Processing...') : (mode === 'refund' ? t('refundAdvance') : t('collectNow'))}
             </button>
           </div>
         </div>

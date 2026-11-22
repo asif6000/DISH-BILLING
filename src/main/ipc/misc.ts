@@ -48,11 +48,21 @@ export function registerMiscIpc(): void {
     const db = getDb()
     const amount = round2(Number(data.amount))
     if (!(amount > 0)) throw new Error('INVALID_AMOUNT')
-    if (!data.account_id || !data.type || !data.date || !data.description) throw new Error('MISSING_FIELDS')
+    if (!data.account_id || !data.type) throw new Error('MISSING_FIELDS')
+    // description is optional now — auto-generated so reports/history stay meaningful
+    const cat = data.category_id ? db.prepare('SELECT name FROM expense_categories WHERE id = ?').get(data.category_id) as any : null
+    const description = String(data.description || '').trim()
+      || `${data.type === 'income' ? 'Income' : 'Expense'}${cat ? ' — ' + cat.name : ''}`
+    const acct = db.prepare('SELECT * FROM accounts WHERE id = ?').get(data.account_id) as any
+    if (!acct) throw new Error('ACCOUNT_NOT_FOUND')
+    // expense cannot overdraw the main balance (atomic check inside the transaction)
+    if (data.type === 'expense' && round2(acct.balance) < amount) throw new Error('INSUFFICIENT_BALANCE')
+    const dhaka = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Dhaka' })
+    const date = data.date || dhaka.slice(0, 10)
     db.exec('BEGIN')
     try {
-      db.prepare('INSERT INTO transactions (account_id, type, category_id, date, amount, description, ref, created_by) VALUES (?,?,?,?,?,?,?,?)')
-        .run(data.account_id, data.type, data.category_id || null, data.date, amount, data.description, data.ref || null, s.username)
+      db.prepare('INSERT INTO transactions (account_id, type, category_id, date, amount, description, ref, created_by, created_local_time) VALUES (?,?,?,?,?,?,?,?,?)')
+        .run(data.account_id, data.type, data.category_id || null, date, amount, description, data.ref || null, s.username, dhaka)
       db.prepare('UPDATE accounts SET balance = balance ' + (data.type === 'income' ? '+' : '-') + ' ? WHERE id = ?').run(amount, data.account_id)
       db.exec('COMMIT')
     } catch (err) {
@@ -61,6 +71,89 @@ export function registerMiscIpc(): void {
     }
     logActivity(s.userId, s.username, `create_${data.type}`, 'accounts', String(amount))
     return true
+  })
+
+  // edit an expense/income: reverse the old deduction, apply the new one (atomic)
+  ipcMain.handle('transactions:update', (e, id: number, data: any) => {
+    const s = requirePermission(e, 'accounts')
+    const db = getDb()
+    const old = db.prepare('SELECT * FROM transactions WHERE id = ?').get(id) as any
+    if (!old) throw new Error('NOT_FOUND')
+    const amount = round2(Number(data.amount))
+    if (!(amount > 0)) throw new Error('INVALID_AMOUNT')
+    const accountId = data.account_id || old.account_id
+    const type = data.type || old.type
+    const acct = db.prepare('SELECT * FROM accounts WHERE id = ?').get(accountId) as any
+    if (!acct) throw new Error('ACCOUNT_NOT_FOUND')
+    // reversal: undo the old entry on its account, then apply the new one
+    const balanceAfterReversal = round2(acct.balance + (old.type === 'income' ? -old.amount : old.amount))
+    if (type === 'expense' && balanceAfterReversal < amount) throw new Error('INSUFFICIENT_BALANCE')
+    const cat = data.category_id ? db.prepare('SELECT name FROM expense_categories WHERE id = ?').get(data.category_id) as any : null
+    const description = String(data.description || '').trim() || `${type === 'income' ? 'Income' : 'Expense'}${cat ? ' — ' + cat.name : ''}`
+    db.exec('BEGIN')
+    try {
+      db.prepare('UPDATE accounts SET balance = balance ' + (old.type === 'income' ? '-' : '+') + ' ? WHERE id = ?').run(old.amount, old.account_id)
+      db.prepare('UPDATE accounts SET balance = balance ' + (type === 'income' ? '+' : '-') + ' ? WHERE id = ?').run(amount, accountId)
+      db.prepare('UPDATE transactions SET account_id = ?, type = ?, category_id = ?, date = ?, amount = ?, description = ?, ref = ? WHERE id = ?')
+        .run(accountId, type, data.category_id || old.category_id, data.date || old.date, amount, description, data.ref ?? old.ref, id)
+      db.exec('COMMIT')
+    } catch (err) {
+      db.exec('ROLLBACK')
+      throw err
+    }
+    logActivity(s.userId, s.username, `update_${type}`, 'accounts', `#${id}: ${old.amount}→${amount}`)
+    return true
+  })
+
+  // delete an expense/income: reverse its previous deduction (ledger stays consistent)
+  ipcMain.handle('transactions:delete', (e, id: number) => {
+    const s = requirePermission(e, 'accounts')
+    const db = getDb()
+    const old = db.prepare('SELECT * FROM transactions WHERE id = ?').get(id) as any
+    if (!old) throw new Error('NOT_FOUND')
+    db.exec('BEGIN')
+    try {
+      db.prepare('UPDATE accounts SET balance = balance ' + (old.type === 'income' ? '-' : '+') + ' ? WHERE id = ?').run(old.amount, old.account_id)
+      db.prepare('DELETE FROM transactions WHERE id = ?').run(id)
+      db.exec('COMMIT')
+    } catch (err) {
+      db.exec('ROLLBACK')
+      throw err
+    }
+    logActivity(s.userId, s.username, `delete_${old.type}`, 'accounts', `#${id}: ${old.amount} reversed`)
+    return true
+  })
+
+  // Main Balance = sum of all active account balances
+  ipcMain.handle('accounts:mainBalance', (e) => {
+    requirePermission(e, 'accounts')
+    const db = getDb()
+    const r = db.prepare("SELECT COALESCE(SUM(balance),0) AS v FROM accounts WHERE status = 'active'").get() as { v: number }
+    return { balance: round2(r.v) }
+  })
+
+  // paginated transaction list (search + type filter) — decorated with labels
+  ipcMain.handle('transactions:list', (e, params: any = {}) => {
+    requirePermission(e, 'accounts')
+    const db = getDb()
+    const page = Math.max(1, params.page || 1)
+    const pageSize = Math.min(200, Math.max(5, params.pageSize || 20))
+    const where: string[] = []
+    const args: any[] = []
+    if (params.filters?.type) { where.push('t.type = ?'); args.push(params.filters.type) }
+    if (params.search) {
+      where.push('(t.description LIKE ? OR t.ref LIKE ? OR ec.name LIKE ? OR a.name LIKE ?)')
+      const like = `%${params.search}%`
+      args.push(like, like, like, like)
+    }
+    const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : ''
+    const total = (db.prepare(`SELECT COUNT(*) AS c FROM transactions t
+      LEFT JOIN expense_categories ec ON ec.id = t.category_id LEFT JOIN accounts a ON a.id = t.account_id ${whereSql}`).get(...args) as { c: number }).c
+    const rows = db.prepare(`SELECT t.*, ec.name AS _category_id_label, a.name AS _account_id_label
+      FROM transactions t
+      LEFT JOIN expense_categories ec ON ec.id = t.category_id LEFT JOIN accounts a ON a.id = t.account_id
+      ${whereSql} ORDER BY t.id DESC LIMIT ? OFFSET ?`).all(...args, pageSize, (page - 1) * pageSize)
+    return { rows, total, page, pageSize }
   })
 
   ipcMain.handle('account_transfers:create', (e, data: any) => {
