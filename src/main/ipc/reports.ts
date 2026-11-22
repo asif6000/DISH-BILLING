@@ -169,7 +169,7 @@ export function registerReportIpc(): void {
     }
     const totalPayable = round2(figures.prevDue + figures.monthBill + figures.additional - figures.discount)
     const currentDue = round2(totalPayable - figures.paid)
-    const payments = db.prepare(`SELECT p.receipt_no, p.amount, p.method, p.reference, p.payment_date, p.created_at, p.created_by,
+    const payments = db.prepare(`SELECT p.id, p.receipt_no, p.amount, p.method, p.reference, p.payment_date, p.created_at, p.created_by,
         COALESCE(s.name, p.created_by) AS collected_by
       FROM payments p LEFT JOIN collectors col ON col.id = p.collector_id LEFT JOIN staff s ON s.id = col.staff_id
       WHERE p.customer_id = ? AND (p.bill_id IN (SELECT id FROM bills WHERE customer_id = ? AND month = ?)

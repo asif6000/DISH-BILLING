@@ -21,6 +21,9 @@ export default function BillReport() {
   const [rows, setRows] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [view, setView] = useState<any>(null)
+  // receipt picker: when a customer has multiple payments in the month, ask
+  // WHICH receipt to print ("যেটা select করা হবে সেটাই দেখাবে")
+  const [pick, setPick] = useState<any>(null)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -36,12 +39,14 @@ export default function BillReport() {
   const openPrint = async (r: any, copy: Copy) => {
     try {
       const info = await window.api.reports.customerBill(r.id, month)
+      if (info.payments.length > 1) { setPick({ info, copy, pdf: false }); return }
       await window.api.print.preview(buildBillHtml(info, copy), `${info.customer.name} — ${monthLabel(month)}`)
     } catch (e) { toast.push('error', errMsg(e)) }
   }
   const savePdf = async (r: any, copy: Copy) => {
     try {
       const info = await window.api.reports.customerBill(r.id, month)
+      if (info.payments.length > 1) { setPick({ info, copy, pdf: true }); return }
       const path = await window.api.print.savePdf(buildBillHtml(info, copy), `${info.customer.code}-${month}-${copy}.pdf`)
       if (path) toast.push('success', (lang === 'bn' ? 'PDF সেভ হয়েছে: ' : 'PDF saved: ') + path)
     } catch (e) { toast.push('error', errMsg(e)) }
@@ -145,6 +150,19 @@ export default function BillReport() {
         </table>
       </div>
       {view && <ViewModal info={view} onClose={() => setView(null)} onPrint={openPrint} onSavePdf={savePdf} />}
+      {pick && <PaymentPickModal pick={pick} onClose={() => setPick(null)} onConfirm={(payId: number | null) => {
+        const { info, copy, pdf } = pick
+        setPick(null)
+        const html = buildBillHtml(info, copy, payId)
+        const name = `${info.customer.name} — ${monthLabel(info.month)}`
+        if (pdf) {
+          window.api.print.savePdf(html, `${info.customer.code}-${info.month}-${copy}.pdf`)
+            .then((p: any) => { if (p) toast.push('success', (lang === 'bn' ? 'PDF সেভ হয়েছে: ' : 'PDF saved: ') + p) })
+            .catch((e: any) => toast.push('error', errMsg(e)))
+        } else {
+          window.api.print.preview(html, name).catch((e: any) => toast.push('error', errMsg(e)))
+        }
+      }} />}
     </div>
   )
 }
@@ -225,10 +243,45 @@ function KV({ label, value }: { label: string; value: any }) {
   )
 }
 
+// receipt picker shown when a customer has multiple payments in the month:
+// "সব" prints all, or pick ONE receipt — the print shows only that one
+function PaymentPickModal({ pick, onClose, onConfirm }: any) {
+  const { lang } = useI18n()
+  const [sel, setSel] = useState<number | null>(null)
+  return (
+    <Modal open onClose={onClose} title={lang === 'bn' ? 'কোন রশিদ প্রিন্ট হবে?' : 'Which receipt to print?'} width="max-w-lg">
+      <p className="text-xs text-slate-500 mb-2">
+        {lang === 'bn' ? 'এই মাসে একাধিক পেমেন্ট আছে — যেটা সিলেক্ট করবেন শুধু সেটাই প্রিন্টে দেখাবে।' : 'Multiple payments this month — only the selected receipt will appear on the print.'}
+      </p>
+      <div className="space-y-1.5">
+        <label className={`flex items-center gap-2 p-2.5 rounded-lg border cursor-pointer text-sm ${sel === null ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20' : 'border-slate-200 dark:border-slate-700'}`}>
+          <input type="radio" checked={sel === null} onChange={() => setSel(null)} />
+          <b>{lang === 'bn' ? 'সব পেমেন্ট (বর্তমান ফরম্যাট)' : 'All payments (current format)'}</b>
+        </label>
+        {pick.info.payments.map((p: any) => (
+          <label key={p.id} className={`flex items-center gap-2 p-2.5 rounded-lg border cursor-pointer text-sm ${sel === p.id ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20' : 'border-slate-200 dark:border-slate-700'}`}>
+            <input type="radio" checked={sel === p.id} onChange={() => setSel(p.id)} />
+            <span className="font-mono text-xs">{p.receipt_no}</span>
+            <span className="text-slate-500">{p.payment_date}</span>
+            <span className="ml-auto font-semibold">{money(p.amount)}</span>
+            <span className="text-xs text-slate-500">{BN_METHODS[p.method] || p.method}</span>
+          </label>
+        ))}
+      </div>
+      <div className="flex justify-end gap-2 mt-4">
+        <button className="btn-secondary" onClick={onClose}>{lang === 'bn' ? 'বাতিল' : 'Cancel'}</button>
+        <button className="btn-primary" onClick={() => onConfirm(sel)}>
+          {pick.pdf ? (lang === 'bn' ? 'PDF সেভ' : 'Save PDF') : (lang === 'bn' ? 'প্রিন্ট' : 'Print')}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
 // ================= A4 print templates (pure HTML string) =================
 // Exported so the Collection page prints with the EXACT same templates.
 
-export function buildBillHtml(info: any, copy: Copy): string {
+export function buildBillHtml(info: any, copy: Copy, selectedPaymentId?: number | null): string {
   const c = info.customer
   const f = info.figures
   const co = info.company
@@ -237,7 +290,9 @@ export function buildBillHtml(info: any, copy: Copy): string {
   const dateStr = genDate.toISOString().slice(0, 10)
   const timeStr = genDate.toTimeString().slice(0, 8)
   const esc = (v: any) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  const payRows = info.payments.map((p: any, i: number) =>
+  // selected receipt only ("যেটা select করা হবে সেটাই দেখাবে") — otherwise all payments
+  const pays = selectedPaymentId ? info.payments.filter((p: any) => p.id === selectedPaymentId) : info.payments
+  const payRows = pays.map((p: any, i: number) =>
     `<tr><td>${i + 1}</td><td>${esc(p.receipt_no)}</td><td>${esc(p.payment_date)}</td><td>${esc(String(p.created_at || '').slice(11, 19))}</td><td class="r">${esc(p.amount)}</td><td>${esc(BN_METHODS[p.method] || p.method)}</td><td>${esc(p.reference || '—')}</td><td>${esc(p.collected_by || '—')}</td></tr>`).join('')
 
   const office = `
@@ -271,11 +326,11 @@ export function buildBillHtml(info: any, copy: Copy): string {
         </table>
       </td>
     </tr></table>
-    <div class="sect">PAYMENT INFORMATION</div>
-    <table class="pay">
-      <thead><tr><th>SL</th><th>Receipt No</th><th>Payment Date</th><th>Payment Time</th><th>Paid Amount</th><th>Method</th><th>Transaction ID</th><th>Collected By</th></tr></thead>
-      <tbody>${payRows || '<tr><td colspan="8" class="r">No payment this month</td></tr>'}</tbody>
-    </table>
+    <div class="sect">PAYMENT INFORMATION${pays.length !== info.payments.length ? ' (SELECTED RECEIPT)' : ''}</div>
+      <table class="pay">
+        <thead><tr><th>SL</th><th>Receipt No</th><th>Payment Date</th><th>Payment Time</th><th>Paid Amount</th><th>Method</th><th>Transaction ID</th><th>Collected By</th></tr></thead>
+        <tbody>${payRows || '<tr><td colspan="8" class="r">No payment this month</td></tr>'}</tbody>
+      </table>
     <table class="sum">
       <tr><td>Total Payable</td><td class="r">${esc(f.totalPayable)} ৳</td></tr>
       <tr><td>Total Paid</td><td class="r">${esc(f.paid)} ৳</td></tr>
@@ -319,9 +374,9 @@ export function buildBillHtml(info: any, copy: Copy): string {
       <table class="bkv">
         <tr><td class="k">পরিশোধিত</td><td>: <b>${esc(f.paid)} টাকা</b></td></tr>
         <tr><td class="k">বর্তমান বকেয়া</td><td>: <b>${esc(f.currentDue)} টাকা</b></td></tr>
-        <tr><td class="k">রশিদ নং</td><td>: ${esc(info.payments.map((p: any) => p.receipt_no).filter(Boolean).join(', ') || '—')}</td></tr>
-        <tr><td class="k">পেমেন্ট তারিখ</td><td>: ${esc(info.payments[0]?.payment_date || '—')}</td></tr>
-        <tr><td class="k">পেমেন্ট পদ্ধতি</td><td>: ${esc(info.payments.map((p: any) => BN_METHODS[p.method] || p.method).join(', ') || '—')}</td></tr>
+        <tr><td class="k">রশিদ নং</td><td>: ${esc(pays.map((p: any) => p.receipt_no).filter(Boolean).join(', ') || '—')}</td></tr>
+        <tr><td class="k">পেমেন্ট তারিখ</td><td>: ${esc(pays[0]?.payment_date || '—')}</td></tr>
+        <tr><td class="k">পেমেন্ট পদ্ধতি</td><td>: ${esc(pays.map((p: any) => BN_METHODS[p.method] || p.method).join(', ') || '—')}</td></tr>
       </table>
       <hr/>
       <table class="bkv">
