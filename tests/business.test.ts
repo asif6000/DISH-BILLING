@@ -472,7 +472,7 @@ async function main() {
 
   // (4) View + Edit → save works again immediately after the permission change
   await H['roles:save'](fakeEvent, { id: adminRole2.id, name: 'Administrator', permissions: ['areas.view', 'areas.edit'] })
-  const admin3Update2 = await H['db:update']({ sender: { id: 4 } } as any, 'areas', areaId, { description: 'ok' })
+  const admin3Update2 = await H['db:update']({ sender: { id: 4 } } as any, 'areas', areaId, { status: 'active' })
   ok('view+edit admin can SAVE after permission change', admin3Update2 === true)
   let admin3CreateErr2 = ''
   try { await H['db:create']({ sender: { id: 4 } } as any, 'areas', { name: 'Nope2', status: 'active' }) } catch (e: any) { admin3CreateErr2 = String(e) }

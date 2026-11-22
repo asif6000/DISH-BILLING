@@ -53,13 +53,10 @@ export const ENTITIES: Record<string, EntityDef> = {
   },
   areas: {
     key: 'areas', table: 'areas', label: 'Area', labelBn: 'এলাকা',
-    searchFields: ['name', 'code'],
+    searchFields: ['name'],
     defaultSort: 'name',
     fields: [
       { name: 'name', label: 'Area Name', labelBn: 'এলাকার নাম', type: 'text', required: true },
-      { name: 'code', label: 'Area Code', labelBn: 'এলাকা কোড', type: 'text' },
-      { name: 'zone_id', label: 'Zone', labelBn: 'জোন', type: 'ref', refEntity: 'zones' },
-      { name: 'description', label: 'Description', labelBn: 'বিবরণ', type: 'textarea', hideInTable: true },
       { name: 'status', label: 'Status', labelBn: 'স্থিতি', type: 'select', options: STATUS, defaultValue: 'active' }
     ]
   },

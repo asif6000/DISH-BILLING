@@ -40,9 +40,7 @@ export const MENU: MenuGroup[] = [
     labelKey: 'm_reseller_group', icon: 'CircleUser',
     children: [
       { labelKey: 'm_reseller', path: '/resellers', icon: 'Users', perm: 'resellers' },
-      { labelKey: 'm_recharge_history', path: '/resellers/wallet', icon: 'Banknote', perm: 'resellers' },
-      { labelKey: 'm_msg_request', path: '/message-request', icon: 'MessageSquareMore' },
-      { labelKey: 'm_payment_withdraw', path: '/payment-withdraw', icon: 'Wallet' }
+      { labelKey: 'm_recharge_history', path: '/resellers/wallet', icon: 'Banknote', perm: 'resellers' }
     ]
   },
   {

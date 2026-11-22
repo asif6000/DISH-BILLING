@@ -88,8 +88,6 @@ function AppInner() {
           <Route path="/pppoe" element={E('pppoe_users', 'm_pppoe')} />
           <Route path="/pppoe/active" element={<EntityPage entity="pppoe_users" title={t('m_pppoe_active')} fixedFilters={{ status: 'active' }} />} />
           <Route path="/cashier" element={<CashbookPage />} />
-          <Route path="/message-request" element={E('message_requests', 'm_msg_request')} />
-          <Route path="/payment-withdraw" element={E('payment_withdraws', 'm_payment_withdraw')} />
           <Route path="/support-numbers" element={<SupportNumbers />} />
           <Route path="/tutorial" element={<Tutorial />} />
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
