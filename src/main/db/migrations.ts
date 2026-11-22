@@ -694,4 +694,14 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE customers ADD COLUMN connection_type TEXT NOT NULL DEFAULT 'paid';
   CREATE INDEX idx_customers_conn_type ON customers(connection_type);
   `
+,
+  `-- Version 17: re-grant company_profile to the Administrator role.
+  -- Security -> Roles edits could accidentally drop the company_profile key,
+  -- which made Settings -> Company Profile unsaveable (PERMISSION_DENIED).
+  -- This migration restores it (idempotent: skipped when already present).
+  UPDATE roles SET permissions = substr(permissions, 1, length(permissions) - 1) || ', "company_profile"]'
+    WHERE name = 'Administrator' AND permissions NOT LIKE '%company_profile%' AND length(permissions) > 2;
+  UPDATE roles SET permissions = '["company_profile"]'
+    WHERE name = 'Administrator' AND permissions NOT LIKE '%company_profile%' AND length(permissions) <= 2;
+  `
 ]

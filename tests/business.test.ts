@@ -594,6 +594,22 @@ async function main() {
   await H['customers:update'](fakeEvent, serialCustomerId, { customer_serial: 16 })
   ok('customer serial editable', ((await H['customers:get'](fakeEvent, serialCustomerId)).customer).customer_serial === 16)
 
+  // ==== migration v17: company_profile auto-restored on the Administrator role ====
+  section('migration v17 - company_profile re-grant')
+  const { MIGRATIONS } = require('../src/main/db/migrations')
+  const adminRole = (await H['roles:list'](fakeEvent)).find((r: any) => r.name === 'Administrator')
+  // simulate an accidental Security → Roles edit that dropped company_profile
+  await H['roles:save'](fakeEvent, { id: adminRole.id, name: 'Administrator', permissions: ['dashboard', 'customers'] })
+  const beforeFix = (await H['roles:list'](fakeEvent)).find((r: any) => r.id === adminRole.id)
+  ok('role edit dropped company_profile (pre-condition)', !String(beforeFix.permissions).includes('company_profile'), beforeFix.permissions)
+  db.exec(MIGRATIONS[MIGRATIONS.length - 1]) // last entry = migration v17
+  const afterFix = JSON.parse(((await H['roles:list'](fakeEvent)).find((r: any) => r.id === adminRole.id) as any).permissions)
+  ok('migration v17 restored company_profile', afterFix.includes('company_profile') && afterFix.includes('dashboard'), afterFix)
+  // idempotent: running it again must not duplicate the entry
+  db.exec(MIGRATIONS[MIGRATIONS.length - 1]) // idempotency: same entry again
+  const afterFix2 = JSON.parse(((await H['roles:list'](fakeEvent)).find((r: any) => r.id === adminRole.id) as any).permissions)
+  ok('migration v17 is idempotent (no duplicates)', afterFix2.filter((k: string) => k === 'company_profile').length === 1, afterFix2)
+
   console.log(`\n=========================\nRESULT: ${pass} passed, ${fail} failed`)
   process.exit(fail > 0 ? 1 : 0)
 }
