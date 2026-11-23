@@ -393,7 +393,98 @@ export function buildBillHtml(info: any, copy: Copy, selectedPaymentId?: number 
     </div>
   </div>`
 
-  const pages = copy === 'both' ? office + customer : copy === 'office' ? office : customer
+  // 'both' = SINGLE A4 sheet: office copy on top, cut line in the middle,
+  // customer copy below (compact versions of the same data — one print dialog,
+  // no second page). Single-copy templates stay exactly as they were.
+  const collFields = [...new Set(pays.map((p: any) => p.collected_by).filter(Boolean))].join(', ')
+  const lastPayDate = pays.length ? pays[pays.length - 1].payment_date : '—'
+  const combined = `
+  <div class="print-page combined-copy">
+    <div class="chalf">
+      <table class="top"><tr>
+        <td class="ltd"><div style="display:flex;gap:8px;align-items:center">${co.logo ? `<img src="${esc(co.logo)}" alt="logo" style="height:34px;width:34px;object-fit:contain" />` : ''}<div><div class="co co-sm">${esc(co.name)}</div></div></div><div class="addr">📞 ${esc(co.mobile)}${co.mobile_alt ? ` | 📞 ${esc(co.mobile_alt)}` : ''} | SMS: ${esc(co.sms)}</div></td>
+        <td class="rtd"><div class="copytag copytag-sm">OFFICE COPY</div><div class="inv">${esc(ml)}</div></td>
+      </tr></table>
+      <hr/>
+      <table class="info"><tr>
+        <td>
+          <div class="sect sect-sm">CUSTOMER INFORMATION</div>
+          <table class="kv kv-sm">
+            <tr><td>Customer ID</td><td><b>${esc(c.code)}</b></td></tr>
+            <tr><td>Customer Name</td><td><b>${esc(c.name)}</b></td></tr>
+            <tr><td>Customer Serial</td><td>${esc(c.customer_serial ?? '—')}</td></tr>
+            <tr><td>Mobile Number</td><td>${esc(c.mobile)}</td></tr>
+            <tr><td>Area / Zone</td><td>${esc(c.area_name || '—')}</td></tr>
+          </table>
+        </td>
+        <td>
+          <div class="sect sect-sm">BILL INFORMATION</div>
+          <table class="kv kv-sm">
+            <tr><td>Billing Month</td><td><b>${esc(ml)}</b></td></tr>
+            <tr><td>Monthly Bill</td><td>${esc(f.monthBill)}${info.customer?.connection_type === 'free' ? ' <span style="color:#0369a1">(FREE)</span>' : ''}</td></tr>
+            <tr><td>Previous Due</td><td>${esc(f.prevDue)}</td></tr>
+            <tr><td>Additional / Discount</td><td>${esc(f.additional)} / ${esc(f.discount)}</td></tr>
+            <tr><td><b>Total Payable</b></td><td class="big"><b>${esc(f.totalPayable)} ৳</b></td></tr>
+          </table>
+        </td>
+      </tr></table>
+      <table class="pay pay-sm">
+        <thead><tr><th>SL</th><th>Receipt No</th><th>Payment Date</th><th>Paid Amount</th><th>Method</th><th>Collected By</th></tr></thead>
+        <tbody>${payRows.length ? pays.map((p: any, i: number) =>
+          `<tr><td>${i + 1}</td><td>${esc(p.receipt_no)}</td><td>${esc(p.payment_date)}</td><td class="r">${esc(p.amount)}</td><td>${esc(BN_METHODS[p.method] || p.method)}</td><td>${esc(p.collected_by || '—')}</td></tr>`).join('') : '<tr><td colspan="6" class="r">No payment this month</td></tr>'}</tbody>
+      </table>
+      <table class="sum sum-sm">
+        <tr><td>Total Payable</td><td class="r">${esc(f.totalPayable)} ৳</td></tr>
+        <tr><td>Total Paid</td><td class="r">${esc(f.paid)} ৳</td></tr>
+        <tr><td><b>Remaining Due</b></td><td class="r"><b>${esc(f.currentDue)} ৳</b></td></tr>
+        <tr><td>Payment Date</td><td class="r">${esc(lastPayDate)}</td></tr>
+        <tr><td>Collected By</td><td class="r">${esc(collFields || '—')}</td></tr>
+        <tr><td>Payment Status</td><td class="r"><b>${esc(String(f.status).toUpperCase())}</b></td></tr>
+      </table>
+      <table class="sig sig-sm"><tr>
+        <td class="ltd">Generated: ${esc(dateStr)} ${esc(timeStr)}</td>
+        <td class="rtd">..............................<br/>Authorized Signature</td>
+      </tr></table>
+    </div>
+    <div class="cutline">✂ ─ ─ ─ ─ ─ ─ CUT HERE ─ ─ ─ ─ ─ ─</div>
+    <div class="chalf">
+      <div class="cc-center">${co.logo ? `<img src="${esc(co.logo)}" alt="logo" style="height:30px;object-fit:contain" />` : ''}<div class="bn-name bn-sm">${esc(co.name_bn || co.name)}</div>${co.name_bn ? `<div class="en-name">${esc(co.name)}</div>` : ''}</div>
+      <div class="cc-center addr">ঠিকানা: ${esc(co.address || '—')} · ফোন: ${esc(co.mobile)} · এসএমএস: ${esc(co.sms)}</div>
+      <hr/>
+      <div class="cc-title cc-title-sm">মাসিক বিল রশিদ — ${esc(ml)}</div>
+      <table class="bkv bkv-sm">
+        <tr><td class="k">গ্রাহকের নাম</td><td>: <b>${esc(c.name)}</b></td></tr>
+        <tr><td class="k">গ্রাহক / সংযোগ নং</td><td>: ${esc(c.code)}</td></tr>
+        <tr><td class="k">ক্রমিক নং</td><td>: ${esc(c.customer_serial ?? '—')}</td></tr>
+        <tr><td class="k">মোবাইল নম্বর</td><td>: ${esc(c.mobile)}</td></tr>
+        <tr><td class="k">এরিয়া</td><td>: ${esc(c.area_name || '—')}</td></tr>
+      </table>
+      <hr/>
+      <table class="bkv bkv-sm">
+        <tr><td class="k">মাসিক বিল</td><td>: ${esc(f.monthBill)} টাকা</td></tr>
+        <tr><td class="k">পূর্বের বকেয়া</td><td>: ${esc(f.prevDue)} টাকা</td></tr>
+        <tr><td class="k">অতিরিক্ত চার্জ</td><td>: ${esc(f.additional)} টাকা</td></tr>
+        <tr><td class="k">ছাড় (ডিসকাউন্ট)</td><td>: ${esc(f.discount)} টাকা</td></tr>
+        <tr><td class="k">সর্বমোট</td><td>: <b>${esc(f.totalPayable)} টাকা</b></td></tr>
+        <tr><td class="k">পরিশোধিত</td><td>: <b>${esc(f.paid)} টাকা</b></td></tr>
+        <tr><td class="k">বর্তমান বকেয়া</td><td>: <b>${esc(f.currentDue)} টাকা</b></td></tr>
+        <tr><td class="k">রশিদ নং</td><td>: ${esc(pays.map((p: any) => p.receipt_no).filter(Boolean).join(', ') || '—')}</td></tr>
+        <tr><td class="k">পেমেন্ট তারিখ</td><td>: ${esc(pays[0]?.payment_date || '—')}</td></tr>
+        <tr><td class="k">পেমেন্ট পদ্ধতি</td><td>: ${esc(pays.map((p: any) => BN_METHODS[p.method] || p.method).join(', ') || '—')}</td></tr>
+        <tr><td class="k">কালেক্টর</td><td>: ${esc(collFields || '—')}</td></tr>
+      </table>
+      <table class="bkv bkv-sm"><tr><td>তারিখ: ${esc(dateStr)} ${esc(timeStr)}</td><td class="r">লাইসেন্স: ${esc(co.license || '—')} · কাস্টমার কপি</td></tr></table>
+      <div style="display:flex;justify-content:flex-end;margin-top:8mm">
+        <div style="text-align:center;min-width:45mm">
+          <div style="border-bottom:1.5px solid #000;height:9mm"></div>
+          <div style="font-size:11px;font-weight:700;margin-top:2px">কাস্টমারের স্বাক্ষর</div>
+        </div>
+      </div>
+      <div class="cc-center foot2">${esc(co.footer || '')}</div>
+    </div>
+  </div>`
+
+  const pages = copy === 'both' ? combined : copy === 'office' ? office : customer
 
   return `<!doctype html><html><head><meta charset="utf-8"><title>Bill</title><style>
   @page { size: A4 portrait; margin: 10mm; }
@@ -432,5 +523,22 @@ export function buildBillHtml(info: any, copy: Copy, selectedPaymentId?: number 
   .bkv td { padding:4.5px 2px; }
   .bkv .k { width:42%; }
   .foot2 { margin-top:8px; font-size:11px; }
+  /* combined both-copies-on-one-A4-sheet layout */
+  .combined-copy { padding:2mm 4mm; }
+  .combined-copy .chalf { height:128mm; overflow:hidden; }
+  .cutline { text-align:center; font-weight:800; font-size:10.5px; letter-spacing:2px; border-top:1.5px dashed #000; border-bottom:1.5px dashed #000; margin:1.5mm 0; padding:2px 0; color:#000; }
+  .co-sm { font-size:15px; }
+  .copytag-sm { padding:2px 8px; font-size:10px; border-width:1.5px; }
+  .sect-sm { font-size:10px; margin:5px 0 3px; }
+  .kv-sm td { padding:1.5px 4px; font-size:10.5px; }
+  .pay-sm th, .pay-sm td { padding:2px 4px; font-size:9.5px; }
+  .sum-sm { margin-top:4px; }
+  .sum-sm td { padding:1.5px 6px; font-size:10.5px; }
+  .sig-sm td { font-size:10px; margin-top:0; }
+  .bn-sm { font-size:17px; }
+  .cc-title-sm { font-size:12.5px; margin:3px 0; padding:3px; }
+  .bkv-sm { font-size:11px; }
+  .bkv-sm td { padding:2px 2px; }
+  .combined-copy .foot2 { margin-top:2px; font-size:9.5px; }
   </style></head><body>${pages}</body></html>`
 }
