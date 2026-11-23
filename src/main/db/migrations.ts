@@ -704,4 +704,12 @@ export const MIGRATIONS: string[] = [
   UPDATE roles SET permissions = '["company_profile"]'
     WHERE name = 'Administrator' AND permissions NOT LIKE '%company_profile%' AND length(permissions) <= 2;
   `
+,
+  `-- Version 18: reminder month on messages (Due Reminders dedupe).
+  -- messages:composeDue stores the billing month so repeated Generate clicks
+  -- can UPDATE the existing draft reminder instead of duplicating rows, and
+  -- 'sent' reminders keep their history (never re-spammed).
+  ALTER TABLE messages ADD COLUMN month TEXT;
+  CREATE INDEX idx_messages_type_month ON messages(type, month);
+  `
 ]

@@ -66,9 +66,15 @@ export function registerGenericIpc(): void {
     }
     const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : ''
     const sortField = params.sort && def.fields.some((f) => f.name === params.sort) ? params.sort : (def.defaultSort || 'id')
-    const dir = params.dir === 'asc' ? 'ASC' : 'DESC'
+    // FIX: defaultSort may already carry its own direction (e.g. 'id desc') —
+    // previously the dir was appended anyway, producing 'ORDER BY id desc DESC'
+    // (SQL error) and breaking every page backed by such an entity (incl. Due
+    // Reminders). Explicit params.dir still wins.
+    const parts = String(sortField).trim().split(/\s+/)
+    const sortCol = parts[0]
+    const dir = params.dir === 'asc' ? 'ASC' : params.dir === 'desc' ? 'DESC' : (parts[1] ? parts[1].toUpperCase() : 'DESC')
     const total = (db.prepare(`SELECT COUNT(*) AS c FROM ${def.table} ${whereSql}`).get(...args) as { c: number }).c
-    const rows = db.prepare(`SELECT * FROM ${def.table} ${whereSql} ORDER BY ${sortField} ${dir} LIMIT ? OFFSET ?`)
+    const rows = db.prepare(`SELECT * FROM ${def.table} ${whereSql} ORDER BY ${sortCol} ${dir} LIMIT ? OFFSET ?`)
       .all(...args, pageSize, (page - 1) * pageSize)
     return { rows: decorate(def, rows), total, page, pageSize }
   })

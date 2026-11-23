@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Send, Users, FileText, CheckCircle2, Plus } from 'lucide-react'
+import { Send, Users, FileText, CheckCircle2, Plus, Pencil } from 'lucide-react'
 import { useI18n, monthLabel } from '../lib/i18n'
 import { PageHeader, Modal, useToast, StatusBadge } from '../components/ui'
 import { DataTable } from '../components/DataTable'
@@ -116,21 +116,47 @@ function DueReminders({ onDone }: { onDone: () => void }) {
   const [month, setMonth] = useState(thisMonth())
   const [rows, setRows] = useState<any[]>([])
   const [tick, setTick2] = useState(0)
+  const [editing, setEditing] = useState<any>(null)
+  const [editText, setEditText] = useState('')
 
   useEffect(() => { window.api.db.reflist('sms_templates').then((r: any) => { setTemplates(r); if (r[0]) setTemplateId(String(r[0].id)) }).catch(() => {}) }, [])
   useEffect(() => {
-    window.api.db.list('messages', { page: 1, pageSize: 100, filters: { type: 'due_reminder' } })
+    // complete generated list — no pagination limit so no due customer is missed
+    window.api.db.list('messages', { page: 1, all: true, filters: { type: 'due_reminder' } })
       .then((r: any) => setRows(r.rows)).catch(() => {})
   }, [tick])
 
   const generate = async () => {
     try {
-      const count = await window.api.messages.composeDue(Number(templateId), month)
-      toast.push('success', `${count} ${lang === 'bn' ? 'মেসেজ তৈরি হয়েছে' : 'messages composed'}`)
+      const res = await window.api.messages.composeDue(Number(templateId), month)
+      const total = res?.total ?? 0
+      if (!total) {
+        toast.push('error', lang === 'bn' ? 'কোনো বকেয়া গ্রাহক পাওয়া যায়নি' : 'No Due Customers Found')
+      } else {
+        toast.push('success', lang === 'bn'
+          ? `${total} জন বকেয়া গ্রাহক — ${res.created} নতুন, ${res.updated} আপডেট`
+          : `${total} due customers — ${res.created} created, ${res.updated} updated`)
+      }
       onDone()
       setTick2((x) => x + 1)
     } catch (e) { toast.push('error', errMsg(e)) }
   }
+
+  const saveEdit = async () => {
+    if (!String(editText).trim()) return
+    try {
+      await window.api.db.update('messages', editing.id, { text: editText })
+      toast.push('success', t('saved'))
+      setEditing(null)
+      setTick2((x) => x + 1)
+    } catch (e) { toast.push('error', errMsg(e)) }
+  }
+
+  // customer label carries the reminder month so exports include it too
+  const displayRows = rows.map((r) => ({
+    ...r,
+    _customer_id_label: `${r._customer_id_label || '-'}${r.month ? ` (${r.month})` : ''}`
+  }))
 
   return (
     <div>
@@ -151,15 +177,33 @@ function DueReminders({ onDone }: { onDone: () => void }) {
       <DataTable columns={[
         { key: 'mobile', label: t('mobile') },
         { key: '_customer_id_label', label: t('customer'), render: (r) => r._customer_id_label || '-' },
-        { key: 'text', label: t('msgCompose'), render: (r) => <span className="text-xs">{r.text?.slice(0, 70)}</span> },
+        { key: 'text', label: t('msgCompose'), render: (r) => <span className="text-xs" title={r.text}>{r.text?.slice(0, 70)}</span> },
         { key: 'status', label: t('statusCol'), render: (r) => <StatusBadge value={r.status} label={t(r.status)} /> },
         { key: 'act', label: t('actions'), render: (r) => (
           <div className="flex gap-1 justify-end">
-            {r.status !== 'sent' && <button className="btn-secondary btn-sm text-emerald-600" onClick={() => window.api.messages.send(r.id).then(() => { toast.push('success', t('msgSend')); setTick2((x) => x + 1) }).catch((e) => toast.push('error', errMsg(e)))}><Send size={12} /></button>}
+            {r.status !== 'sent' && <button className="btn-secondary btn-sm text-emerald-600" title={t('msgSend')} onClick={() => window.api.messages.send(r.id).then(() => { toast.push('success', t('msgSend')); setTick2((x) => x + 1) }).catch((e) => toast.push('error', errMsg(e)))}><Send size={12} /></button>}
             {r.status !== 'sent' && <button className="btn-secondary btn-sm" title={t('msgMarkSent')} onClick={() => window.api.messages.markSent(r.id).then(() => setTick2((x) => x + 1))}><CheckCircle2 size={12} /></button>}
+            {r.status !== 'sent' && <button className="btn-secondary btn-sm" title={t('edit')} onClick={() => { setEditing(r); setEditText(r.text || '') }}><Pencil size={12} /></button>}
           </div>
         ) }
-      ]} rows={rows} exportName="due-reminders" />
+      ]} rows={displayRows} exportName={`due-reminders-${month}`} />
+
+      <Modal open={!!editing} onClose={() => setEditing(null)} title={`${t('edit')} — ${editing?._customer_id_label || ''}`} width="max-w-lg">
+        <div className="space-y-3">
+          <div>
+            <label className="label">{t('mobile')}</label>
+            <input className="input" value={editing?.mobile || ''} disabled />
+          </div>
+          <div>
+            <label className="label">{t('msgCompose')} <span className="text-red-500">*</span></label>
+            <textarea className="input min-h-[130px]" value={editText} onChange={(e) => setEditText(e.target.value)} autoFocus />
+          </div>
+          <div className="flex justify-end gap-2">
+            <button className="btn-secondary" onClick={() => setEditing(null)}>{t('cancel')}</button>
+            <button className="btn-primary" onClick={saveEdit} disabled={!editText.trim()}>{t('save')}</button>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }

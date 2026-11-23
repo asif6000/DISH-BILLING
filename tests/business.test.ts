@@ -615,13 +615,66 @@ async function main() {
   await H['roles:save'](fakeEvent, { id: adminRole.id, name: 'Administrator', permissions: ['dashboard', 'customers'] })
   const beforeFix = (await H['roles:list'](fakeEvent)).find((r: any) => r.id === adminRole.id)
   ok('role edit dropped company_profile (pre-condition)', !String(beforeFix.permissions).includes('company_profile'), beforeFix.permissions)
-  db.exec(MIGRATIONS[MIGRATIONS.length - 1]) // last entry = migration v17
+  const v17Idx = MIGRATIONS.findIndex((m: string) => m.includes('Version 17: re-grant company_profile'))
+  db.exec(MIGRATIONS[v17Idx])
   const afterFix = JSON.parse(((await H['roles:list'](fakeEvent)).find((r: any) => r.id === adminRole.id) as any).permissions)
   ok('migration v17 restored company_profile', afterFix.includes('company_profile') && afterFix.includes('dashboard'), afterFix)
   // idempotent: running it again must not duplicate the entry
-  db.exec(MIGRATIONS[MIGRATIONS.length - 1]) // idempotency: same entry again
+  db.exec(MIGRATIONS[v17Idx]) // idempotency: same entry again
   const afterFix2 = JSON.parse(((await H['roles:list'](fakeEvent)).find((r: any) => r.id === adminRole.id) as any).permissions)
   ok('migration v17 is idempotent (no duplicates)', afterFix2.filter((k: string) => k === 'company_profile').length === 1, afterFix2)
+
+  // ==== due reminders: generate, dedupe, edit, empty state ====
+  section('due reminders — generate + duplicate prevention')
+  // due month: bills for c1 (fully paid above), c2 (partial: due 100), and a new
+  // customer with unpaid bill + one with no mobile
+  const rMonth = '2026-10'
+  const cNoMob = await H['customers:create'](fakeEvent, { name: 'No Mobile', mobile: '01355500001', area_id: areaId, monthly_bill: 200 })
+  const cUnpaid = await H['customers:create'](fakeEvent, { name: 'Unpaid One', mobile: '01355500002', area_id: areaId, monthly_bill: 250 })
+  await H['customers:update'](fakeEvent, cNoMob, { mobile: '' })
+  await H['billing:generate'](fakeEvent, rMonth, undefined, 'manual')
+  // make cNoMob have no mobile (already empty above); cUnpaid gets a bill with no payment
+  // partial: c2 already has due from the earlier month test? use bills of rMonth for c2
+  const tpl = await H['db:create'](fakeEvent, 'sms_templates', { name: 'Due Reminder T', type: 'due_reminder', content: 'Dear {{name}}, your {{month}} bill due_amount is {{due_amount}}. - {{company}}', status: 'active' })
+  const g1 = await H['messages:composeDue'](fakeEvent, tpl, rMonth)
+  ok('composeDue returns totals (created+skipped match due customers)', g1.total > 0 && g1.created + g1.skipped === g1.total, g1)
+  const rem1 = (await H['db:list'](fakeEvent, 'messages', { page: 1, all: true, filters: { type: 'due_reminder' } })).rows
+  ok('every due customer has a reminder', rem1.length >= g1.created, rem1.length)
+  const noMob = rem1.find((m: any) => m.customer_id === cNoMob)
+  ok('customer without mobile skipped', !noMob, noMob)
+  const un = rem1.find((m: any) => m.customer_id === cUnpaid)
+    const unBillDue = Math.round((un && (await H['customers:get'](fakeEvent, cUnpaid)).bills.find((b: any) => b.month === rMonth).total) - (await H['customers:get'](fakeEvent, cUnpaid)).bills.find((b: any) => b.month === rMonth).paid)
+  ok('unpaid customer included with real due amount', !!un && un.text.includes(String(unBillDue)), { text: un?.text, due: unBillDue })
+  ok('due_amount placeholder replaced', un?.text.includes('Dear Unpaid One') && un.text.includes(rMonth), un?.text)
+  // partial payment: pay part of cUnpaid's bill, regenerate — draft reminder updates, not duplicates
+  const unpaidBill = (await H['customers:get'](fakeEvent, cUnpaid)).bills.find((b: any) => b.month === rMonth)
+  await H['payments:collect'](fakeEvent, { customerId: cUnpaid, amount: 100, method: 'cash', type: 'bill', billId: unpaidBill.id })
+  const g2 = await H['messages:composeDue'](fakeEvent, tpl, rMonth)
+  ok('regenerate: existing drafts UPDATED not duplicated', g2.updated >= 1 && g2.created === 0, g2)
+  const rem2 = (await H['db:list'](fakeEvent, 'messages', { page: 1, all: true, filters: { type: 'due_reminder' } })).rows
+  ok('no duplicate rows after repeat clicks', rem2.length === rem1.length, { before: rem1.length, after: rem2.length })
+  const un2 = rem2.find((m: any) => m.customer_id === cUnpaid)
+    const ub2 = (await H['customers:get'](fakeEvent, cUnpaid)).bills.find((b: any) => b.month === rMonth)
+  const unBillDue2 = Math.round(ub2.total - ub2.paid)
+  ok('updated reminder carries new remaining due', un2?.text.includes(String(unBillDue2)) && unBillDue2 === 165, { text: un2?.text, due: unBillDue2 })
+  // sent reminders keep history and are never re-created
+  const markTarget = rem2.find((m: any) => m.customer_id === cUnpaid)
+  await H['messages:markSent'](fakeEvent, markTarget.id)
+  await H['payments:collect'](fakeEvent, { customerId: cUnpaid, amount: 50, method: 'cash', type: 'bill', billId: unpaidBill.id })
+  const g3 = await H['messages:composeDue'](fakeEvent, tpl, rMonth)
+  ok('sent reminder skipped (history preserved)', g3.created === 0 && g3.skipped >= 1, g3)
+  // edit message text
+  const draft = rem2.find((m: any) => m.status !== 'sent')
+  await H['db:update'](fakeEvent, 'messages', draft.id, { text: 'Custom reminder text' })
+  const edited = (await H['db:get'](fakeEvent, 'messages', draft.id))
+  ok('reminder text editable', edited.text === 'Custom reminder text', edited)
+  // empty state: month with no dues
+  const g4 = await H['messages:composeDue'](fakeEvent, tpl, '2099-01')
+  ok('empty month → zero due customers', g4.total === 0 && g4.created === 0, g4)
+  // invalid month rejected
+  let badMonthErr = ''
+  try { await H['messages:composeDue'](fakeEvent, tpl, '2099-1') } catch (e: any) { badMonthErr = String(e) }
+  ok('invalid month rejected', badMonthErr.includes('INVALID_MONTH'), badMonthErr)
 
   console.log(`\n=========================\nRESULT: ${pass} passed, ${fail} failed`)
   process.exit(fail > 0 ? 1 : 0)

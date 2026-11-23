@@ -198,28 +198,55 @@ export function registerMiscIpc(): void {
   })
 
   // ---------- Messages ----------
+  // Generate due-reminder messages for EVERY active customer with an
+  // outstanding balance on the selected month's bills (unpaid + partially paid
+  // both — remaining due = total - paid, real amounts, never estimated).
+  // Duplicate prevention: one reminder per (customer, month, type) — repeated
+  // clicks UPDATE the existing draft/queued message; a SENT reminder keeps its
+  // history and is never re-created.
   ipcMain.handle('messages:composeDue', (e, templateId: number, month: string) => {
     const s = requirePermission(e, 'messaging')
     const db = getDb()
+    if (!/^\d{4}-\d{2}$/.test(String(month || ''))) throw new Error('INVALID_MONTH')
     const template = db.prepare('SELECT * FROM sms_templates WHERE id = ?').get(templateId) as any
     if (!template) throw new Error('TEMPLATE_NOT_FOUND')
     const company = getSetting('company_name', 'AVA Cable Network')
     const dues = db.prepare(`SELECT c.id, c.name, c.mobile, COALESCE(SUM(b.total - b.paid),0) AS due
       FROM customers c JOIN bills b ON b.customer_id = c.id
-      WHERE c.status = 'active' AND b.month = ? AND b.status != 'cancelled' AND b.status != 'paid'
-      GROUP BY c.id HAVING due > 0`).all(month) as any[]
-    const ins = db.prepare('INSERT INTO messages (customer_id, mobile, channel, type, text, status) VALUES (?,?,?,?,?,?)')
-    let created = 0
-    for (const c of dues) {
-      const text = template.content
-        .replace(/{{name}}/g, c.name).replace(/{{month}}/g, month)
-        .replace(/{{total}}/g, String(round2(c.due))).replace(/{{amount}}/g, String(round2(c.due)))
-        .replace(/{{company}}/g, company)
-      ins.run(c.id, c.mobile, template.type === 'marketing' ? 'whatsapp' : 'sms', template.type, text, 'draft')
-      created++
+      WHERE c.status = 'active' AND b.month = ? AND b.status != 'cancelled'
+      GROUP BY c.id HAVING due > 0.009 ORDER BY c.code`).all(month) as any[]
+    const findPrev = db.prepare(`SELECT id, status FROM messages
+      WHERE customer_id = ? AND type = 'due_reminder' AND month = ? ORDER BY id DESC LIMIT 1`)
+    const upd = db.prepare('UPDATE messages SET text = ?, mobile = ? WHERE id = ?')
+    const ins = db.prepare("INSERT INTO messages (customer_id, mobile, channel, type, text, status, month) VALUES (?,?,?, 'due_reminder', ?, 'draft', ?)")
+    let created = 0, updated = 0, skipped = 0
+    db.exec('BEGIN')
+    try {
+      for (const c of dues) {
+        if (!String(c.mobile || '').trim()) { skipped++; continue } // no mobile → cannot remind
+        const dueAmt = String(round2(c.due))
+        const text = template.content
+          .replace(/{{name}}/g, c.name).replace(/{{month}}/g, month)
+          .replace(/{{total}}/g, dueAmt).replace(/{{amount}}/g, dueAmt)
+          .replace(/{{due_amount}}/g, dueAmt).replace(/{{due}}/g, dueAmt)
+          .replace(/{{company}}/g, company)
+        const prev = findPrev.get(c.id, month) as any
+        if (prev) {
+          if (prev.status === 'sent') { skipped++; continue } // already reminded — history preserved
+          upd.run(text, c.mobile, prev.id) // reuse: draft/queued message refreshed
+          updated++
+        } else {
+          ins.run(c.id, c.mobile, 'sms', text, month)
+          created++
+        }
+      }
+      db.exec('COMMIT')
+    } catch (err) {
+      db.exec('ROLLBACK')
+      throw err
     }
-    logActivity(s.userId, s.username, 'compose_due_messages', 'messaging', `${created}`)
-    return created
+    logActivity(s.userId, s.username, 'compose_due_messages', 'messaging', `month:${month} created:${created} updated:${updated} skipped:${skipped}`)
+    return { created, updated, skipped, total: dues.length }
   })
 
   ipcMain.handle('messages:send', (e, messageId: number) => {
