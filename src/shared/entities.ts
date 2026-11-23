@@ -83,11 +83,10 @@ export const ENTITIES: Record<string, EntityDef> = {
   },
   packages: {
     key: 'packages', table: 'packages', label: 'Package', labelBn: 'প্যাকেজ',
-    searchFields: ['name', 'code'],
+    searchFields: ['name'],
     defaultSort: 'price',
     fields: [
       { name: 'name', label: 'Package Name', labelBn: 'প্যাকেজের নাম', type: 'text', required: true },
-      { name: 'code', label: 'Code', labelBn: 'কোড', type: 'text' },
       { name: 'price', label: 'Monthly Price', labelBn: 'মাসিক মূল্য', type: 'money', required: true, min: 0 },
       {
         name: 'type', label: 'Type', labelBn: 'ধরন', type: 'select', defaultValue: 'standard',
@@ -101,7 +100,6 @@ export const ENTITIES: Record<string, EntityDef> = {
         ]
       },
       { name: 'channels', label: 'Channels', labelBn: 'চ্যানেল সংখ্যা', type: 'number', min: 0 },
-      { name: 'description', label: 'Description', labelBn: 'বিবরণ', type: 'textarea', hideInTable: true },
       { name: 'status', label: 'Status', labelBn: 'স্থিতি', type: 'select', options: STATUS, defaultValue: 'active' }
     ]
   },
