@@ -550,6 +550,19 @@ async function main() {
   // SUPER_ADMIN still saves everything incl. system settings
   await H['settings:setMany'](fakeEvent, { company_name: 'AVA Test Cable Network', late_fee: '10' })
   ok('SUPER_ADMIN saves company + system settings', getSetting('late_fee') === '10')
+  // FIX: users holding the 'settings' MODULE key are full settings managers —
+  // grant it to admin3 (sender 4) per-user and system settings must save
+  let grantErr = ''
+  try { await H['permissions:set'](fakeEvent, admin3Id, [{ key: 'settings' }]) } catch (e: any) { grantErr = String(e) }
+  ok('settings grant accepted', grantErr === '', grantErr)
+  const admin3Session = (await H['auth:check']({ sender: { id: 4 } } as any))?.user?.permissions || []
+  ok('admin3 live session carries settings grant', admin3Session.includes('settings'), admin3Session)
+  let sysSaveErr = ''
+  try { await H['settings:setMany']({ sender: { id: 4 } } as any, { late_fee: '15', session_timeout: '240' }) } catch (e: any) { sysSaveErr = String(e) }
+  ok('settings module key holder saves system settings', sysSaveErr === '' && getSetting('late_fee') === '15' && getSetting('session_timeout') === '240', sysSaveErr)
+  let sysSetErr = ''
+  try { await H['settings:set']({ sender: { id: 4 } } as any, 'permission_mode', 'open') } catch (e: any) { sysSetErr = String(e) }
+  ok('settings key holder can save single system keys too', sysSetErr === '', sysSetErr)
   // print data: billing invoice + customer bill carry the saved company info
   const inv = await H['billing:invoice']({ sender: { id: 1 } } as any, b1.id)
   ok('invoice print data carries saved company name/mobile', inv.company.name === 'AVA Test Cable Network' && inv.company.mobile === '01712345678')

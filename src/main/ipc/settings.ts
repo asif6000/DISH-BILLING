@@ -67,8 +67,12 @@ export function registerSettingsIpc(): void {
   // Sensitive keys (permission_mode, seq counters, session timeout...) remain
   // SUPER_ADMIN/settings-only — a company_profile grant can never escalate to
   // 'open' permission mode.
+  // FIX: users holding the 'settings' MODULE key are full settings managers —
+  // they may save system keys too. Previously only 'all' holders could, so an
+  // Administrator with 'settings' (no 'all') always hit PERMISSION_DENIED on
+  // the system part of the Settings page save.
   const canSaveKeys = (s: any, keys: string[]): boolean => {
-    if (s.permissions.includes('all')) return true
+    if (s.permissions.includes('all') || s.permissions.includes('settings')) return true
     if (!keys.every((k) => COMPANY_KEYS.includes(k))) return false
     return canEditCompany(s)
   }

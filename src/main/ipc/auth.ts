@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs'
 import { getDb, logActivity, getSetting } from '../db'
 import { isUserBlocked } from '../subscription'
 import { isUpdatePending } from '../updateState'
-import { hasPermission, hasModuleAccess, isValidRoleKey, isValidPermKey } from '../../shared/permissions'
+import { hasPermission, hasModuleAccess, isValidRoleKey } from '../../shared/permissions'
 
 export interface Session {
   userId: number
@@ -307,7 +307,11 @@ export function registerAuthIpc(): void {
     if (s.userId === userId) throw new Error('CANNOT_ASSIGN_TO_SELF') // users cannot grant themselves permissions
     if (!canManageTargetPerms(s, target)) throw new Error('PERMISSION_DENIED:users')
     const actorEffective = getEffectivePermissions(s.userId)
-    const valid = (grants || []).filter((g) => g && isValidPermKey(g.key))
+    // FIX: legacy module keys (e.g. 'settings') are valid role keys but not in
+    // the catalog — previously the strict catalog check silently FILTERED them
+    // out, so a per-user 'settings' grant never actually persisted while the
+    // role-level key worked. Per-user grants now accept anything a role can hold.
+    const valid = (grants || []).filter((g) => g && isValidRoleKey(g.key))
     // delegation guard: a parent can only grant permissions it itself holds
     // (SUPER_ADMIN holds 'all' so it can grant anything; children cannot exceed parents)
     for (const g of valid) {
