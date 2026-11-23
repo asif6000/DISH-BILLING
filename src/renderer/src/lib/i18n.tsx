@@ -51,7 +51,7 @@ const bn: Record<string, string> = {
   nav_automation: 'অটোমেশন ব্যবস্থাপনা', nav_branches: 'ব্রাঞ্চ ব্যবস্থাপনা', nav_security: 'নিরাপত্তা ও পারমিশন',
   nav_settings: 'সেটিংস',
   // classic sidebar menu
-  m_dashboard: 'ড্যাশবোর্ড', m_area: 'এরিয়া', m_myclassic: 'মাইক্লাজিক',
+  m_dashboard: 'ড্যাশবোর্ড', m_area: 'এরিয়া', m_myclassic: 'ডিশ',
   m_customers_group: 'গ্রাহক', m_customers: 'গ্রাহক', m_pppoe: 'পিপিপোইউ',
   m_pppoe_active: 'এক্টিভ পিপিপোইউ', m_customers_other: 'অন্যান্য গ্রাহক',
   m_reports_group: 'রিপোর্ট', m_collection: 'কালেকশন', m_reseller_collection: 'রিসেলার কালেকশন',
@@ -266,7 +266,7 @@ Object.assign(en, {
   nav_automation: 'Automation Management', nav_branches: 'Branch Management', nav_security: 'Security & Permission',
   nav_settings: 'Settings',
   // classic sidebar menu
-  m_dashboard: 'Dashboard', m_area: 'Area', m_myclassic: 'My Classic',
+  m_dashboard: 'Dashboard', m_area: 'Area', m_myclassic: 'Dish',
   m_customers_group: 'Customers', m_customers: 'Customers', m_pppoe: 'PPPoE',
   m_pppoe_active: 'Active PPPoE', m_customers_other: 'Other Customers',
   m_reports_group: 'Reports', m_collection: 'Collection', m_reseller_collection: 'Reseller Collection',
