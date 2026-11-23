@@ -41,7 +41,7 @@ const api = {
   roles: {
     list: () => invoke('roles:list'),
     save: (d: any) => invoke('roles:save', d),
-    delete: (id: number) => invoke('roles:delete', id)
+    delete: (id: number, reassignTo?: number) => invoke('roles:delete', id, reassignTo)
   },
   logs: {
     activity: (limit?: number) => invoke('logs:activity', limit),

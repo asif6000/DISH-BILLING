@@ -712,4 +712,8 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE messages ADD COLUMN month TEXT;
   CREATE INDEX idx_messages_type_month ON messages(type, month);
   `
+,
+  `-- Version 19: role descriptions (Role Management Add/Edit form).
+  ALTER TABLE roles ADD COLUMN description TEXT;
+  `
 ]

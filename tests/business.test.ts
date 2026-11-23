@@ -563,6 +563,39 @@ async function main() {
   let sysSetErr = ''
   try { await H['settings:set']({ sender: { id: 4 } } as any, 'permission_mode', 'open') } catch (e: any) { sysSetErr = String(e) }
   ok('settings key holder can save single system keys too', sysSetErr === '', sysSetErr)
+
+  // ==== role management: add/edit/delete with description + safe reassignment ====
+  section('role management — custom roles')
+  const newRoleId = await H['roles:save'](fakeEvent, { name: 'Front Desk', description: 'Front desk operator', permissions: ['customers', 'payments.view', 'payments.collect'] })
+  ok('custom role created with description + id returned', newRoleId > 0, newRoleId)
+  const newRole = (await H['roles:list'](fakeEvent)).find((r: any) => r.id === newRoleId)
+  ok('custom role persists name/description/permissions', newRole?.description === 'Front desk operator' && JSON.parse(newRole.permissions).includes('payments.collect'), newRole)
+  // edit: update description + permissions, count changes
+  await H['roles:save'](fakeEvent, { id: newRoleId, name: 'Front Desk', description: 'Front desk (edited)', permissions: ['customers'] })
+  const editedRole = (await H['roles:list'](fakeEvent)).find((r: any) => r.id === newRoleId)
+  ok('custom role edit works + count updates', editedRole?.description === 'Front desk (edited)' && JSON.parse(editedRole.permissions).length === 1, editedRole)
+  // system roles protected: delete blocked, SUPER_ADMIN read-only
+  const adminSys = (await H['roles:list'](fakeEvent)).find((r: any) => r.name === 'Administrator')
+  let sysDelErr = ''
+  try { await H['roles:delete'](fakeEvent, adminSys.id) } catch (e: any) { sysDelErr = String(e) }
+  ok('system role delete blocked', sysDelErr.includes('SYSTEM_ROLE_READONLY'), sysDelErr)
+  // delete custom role with users → safe reassignment required
+  const rUser = await H['users:create'](fakeEvent, { username: 'frontdesk1', password: 'secret1', full_name: 'FD One', role_id: newRoleId }) as number
+  let inUseErr = ''
+  try { await H['roles:delete'](fakeEvent, newRoleId) } catch (e: any) { inUseErr = String(e) }
+  ok('deleting an in-use custom role blocked (ROLE_IN_USE)', inUseErr.includes('ROLE_IN_USE'), inUseErr)
+  const collectorRole = (await H['roles:list'](fakeEvent)).find((r: any) => r.name === 'Collector')
+  const delRes = await H['roles:delete'](fakeEvent, newRoleId, collectorRole.id)
+  ok('safe reassignment + delete works', delRes.reassigned === 1, delRes)
+  const movedUser = (await H['users:list'](fakeEvent)).find((u: any) => u.id === rUser)
+  ok('user moved to the reassignment target role', movedUser?.role_name === 'Collector', movedUser)
+  // after deletion the role is gone
+  const goneRole = (await H['roles:list'](fakeEvent)).find((r: any) => r.id === newRoleId)
+  ok('deleted custom role removed from list', !goneRole, goneRole)
+  // empty name rejected on create
+  let noNameErr = ''
+  try { await H['roles:save'](fakeEvent, { name: '', permissions: [] }) } catch (e: any) { noNameErr = String(e) }
+  ok('role name required', noNameErr.includes('REQUIRED:name'), noNameErr)
   // print data: billing invoice + customer bill carry the saved company info
   const inv = await H['billing:invoice']({ sender: { id: 1 } } as any, b1.id)
   ok('invoice print data carries saved company name/mobile', inv.company.name === 'AVA Test Cable Network' && inv.company.mobile === '01712345678')

@@ -402,6 +402,7 @@ export function registerAuthIpc(): void {
     if (perms.includes('all')) throw new Error('ALL_PERMISSION_RESERVED')
     const invalid = perms.find((k: string) => !isValidRoleKey(k))
     if (invalid) throw new Error(`INVALID_PERMISSION:${invalid}`)
+    const description = data.description ? String(data.description).slice(0, 300) : null
     let roleId = data.id as number | undefined
     if (roleId) {
       const role = db.prepare('SELECT * FROM roles WHERE id = ?').get(roleId) as any
@@ -411,29 +412,54 @@ export function registerAuthIpc(): void {
       // reported bug: SYSTEM_ROLE_READONLY blocked every Administrator save)
       if (role.is_system && role.name === 'SUPER_ADMIN') throw new Error('SYSTEM_ROLE_READONLY')
       // system role names never change (only their permission set does)
-      const name = role.is_system ? role.name : (data.name || role.name)
-      db.prepare('UPDATE roles SET name = ?, permissions = ? WHERE id = ?').run(name, JSON.stringify(perms), roleId)
+      const name = role.is_system ? role.name : String(data.name || role.name).trim()
+      db.prepare('UPDATE roles SET name = ?, permissions = ?, description = ? WHERE id = ?').run(name, JSON.stringify(perms), description, roleId)
     } else {
-      const r = db.prepare('INSERT INTO roles (name, permissions) VALUES (?, ?)').run(data.name || 'New Role', JSON.stringify(perms))
+      if (!String(data.name || '').trim()) throw new Error('REQUIRED:name')
+      const r = db.prepare('INSERT INTO roles (name, permissions, description) VALUES (?, ?, ?)').run(String(data.name).trim(), JSON.stringify(perms), description)
       roleId = Number(r.lastInsertRowid)
     }
     // push the updated permission set into every live session of this role —
     // changes take effect immediately, without logout/login
     refreshSessionsForRole(roleId!)
     logActivity(s.userId, s.username, 'save_role', 'security', data.name)
-    return true
+    return roleId
   })
 
-  ipcMain.handle('roles:delete', (e, id: number) => {
+  // Delete a CUSTOM role. System roles can never be deleted. If the role is
+  // still assigned to users, the caller must pass reassignTo: the users are
+  // safely moved to that role (transaction) before the role is deleted.
+  ipcMain.handle('roles:delete', (e, id: number, reassignTo?: number) => {
     const s = requirePermission(e, 'security', 'manage')
     const db = getDb()
     const role = db.prepare('SELECT * FROM roles WHERE id = ?').get(id) as any
-    if (role && role.is_system) throw new Error('SYSTEM_ROLE_READONLY')
+    if (!role) throw new Error('NOT_FOUND')
+    if (role.is_system) throw new Error('SYSTEM_ROLE_READONLY')
     const used = db.prepare('SELECT COUNT(*) AS c FROM users WHERE role_id = ?').get(id) as { c: number }
-    if (used.c > 0) throw new Error('ROLE_IN_USE')
+    if (used.c > 0) {
+      if (!reassignTo) throw new Error('ROLE_IN_USE')
+      const target = db.prepare('SELECT * FROM roles WHERE id = ?').get(Number(reassignTo)) as any
+      if (!target) throw new Error('TARGET_ROLE_NOT_FOUND')
+      if (target.id === role.id) throw new Error('INVALID_REASSIGNMENT')
+      if (target.is_system && target.name === 'SUPER_ADMIN') throw new Error('INVALID_REASSIGNMENT')
+      db.exec('BEGIN')
+      try {
+        db.prepare('UPDATE users SET role_id = ? WHERE role_id = ?').run(target.id, id)
+        db.prepare('DELETE FROM roles WHERE id = ?').run(id)
+        db.exec('COMMIT')
+      } catch (err) {
+        db.exec('ROLLBACK')
+        throw err
+      }
+      // every MOVED user gets the target role's permissions immediately
+      const moved = db.prepare('SELECT id FROM users WHERE role_id = ?').all(target.id) as any[]
+      for (const u of moved) refreshSessionPerms(u.id)
+      logActivity(s.userId, s.username, 'delete_role', 'security', `${role.name} → users reassigned to ${target.name}`)
+      return { reassigned: used.c }
+    }
     db.prepare('DELETE FROM roles WHERE id = ?').run(id)
-    logActivity(s.userId, s.username, 'delete_role', 'security', String(id))
-    return true
+    logActivity(s.userId, s.username, 'delete_role', 'security', role.name)
+    return { reassigned: 0 }
   })
 
   ipcMain.handle('logs:activity', (e, limit = 200) => {

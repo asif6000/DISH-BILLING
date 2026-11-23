@@ -6,14 +6,30 @@ import { DataTable, Column } from '../components/DataTable'
 import { money, dateFmt } from '../lib/format'
 import { errMsg } from '../lib/api'
 import { PERMISSION_CATALOG } from '@shared/permissions'
+import { useCan } from '../lib/perms'
 
 const TABS = ['users', 'roles', 'logs', 'logins', 'backup'] as const
 type Tab = typeof TABS[number]
 
 export default function SecurityPage({ tab: initial }: { tab?: string }) {
   const { t, lang } = useI18n()
+  const can = useCan()
   const [tab, setTab] = useState<Tab>((initial as Tab) || 'users')
   useEffect(() => { setTab((initial as Tab) || 'users') }, [initial])
+
+  // direct-URL guard: the menu is hidden without the security permission, and
+  // opening /security/* directly also shows Access Denied (the backend denies
+  // every action anyway — this keeps the UI honest)
+  if (!can('security')) {
+    return (
+      <div>
+        <PageHeader title={t('nav_security')} />
+        <div className="card p-6 text-center text-sm text-slate-500">
+          {lang === 'bn' ? 'আপনার এই অংশের অনুমতি নেই।' : 'You do not have permission for this section.'}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div>
@@ -307,6 +323,10 @@ function RolesTab() {
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<any>(null)
   const [perms, setPerms] = useState<Set<string>>(new Set())
+  const [description, setDescription] = useState('')
+  // safe deletion: role assigned to users → pick a target role to reassign them
+  const [deleting, setDeleting] = useState<any>(null)
+  const [reassignTo, setReassignTo] = useState('')
 
   const load = () => window.api.roles.list().then(setRows).catch(() => {})
   useEffect(() => { load() }, [])
@@ -329,12 +349,26 @@ function RolesTab() {
   const actionChecked = (mod: string, action: string) => perms.has(mod) || perms.has(`${mod}.${action}`)
 
   const save = async () => {
+    if (!isSystem && !String(editing?.name || '').trim()) { toast.push('error', t('required')); return }
     try {
       // 'all' is reserved for SUPER_ADMIN — never grantable from the editor
       const list = [...perms].filter((k) => k !== 'all')
-      await window.api.roles.save({ id: editing?.id, name: editing?.name || 'New Role', permissions: list })
+      // guard against accidentally wiping a system role's access
+      if (isSystem && list.length === 0 && !window.confirm(lang === 'bn'
+        ? 'সতর্কতা: কোনো permission নির্বাচন করা হয়নি — এই system role-এর সব অ্যাক্সেস হারাবে। নিশ্চিত?'
+        : 'Warning: no permissions selected — this system role will lose ALL access. Continue?')) return
+      await window.api.roles.save({ id: editing?.id, name: editing?.name || 'New Role', description, permissions: list })
       toast.push('success', t('saved'))
       setOpen(false)
+      load()
+    } catch (e) { toast.push('error', errMsg(e)) }
+  }
+
+  const doDelete = async (reassign?: number) => {
+    try {
+      const res = await window.api.roles.delete(deleting.id, reassign)
+      toast.push('success', (res?.reassigned ? `${res.reassigned} ${lang === 'bn' ? 'ইউজার রিঅ্যাসাইন হয়েছে — ' : 'user(s) reassigned — '}` : '') + t('deleted'))
+      setDeleting(null)
       load()
     } catch (e) { toast.push('error', errMsg(e)) }
   }
@@ -342,18 +376,19 @@ function RolesTab() {
   return (
     <div>
       <div className="flex justify-end mb-3">
-        <button className="btn-primary" onClick={() => { setEditing({ name: '' }); setPerms(new Set()); setOpen(true) }}><Plus size={16} /> {t('add')}</button>
+        <button className="btn-primary" onClick={() => { setEditing({ name: '' }); setDescription(''); setPerms(new Set()); setOpen(true) }}><Plus size={16} /> {t('add')}</button>
       </div>
       <DataTable columns={[
         { key: 'name', label: t('role') },
+        { key: 'description', label: 'Description', render: (r) => r.description || '-' },
         { key: 'permCount', label: t('permissions'), render: (r) => (JSON.parse(r.permissions || '[]').length) },
         { key: 'is_system', label: 'System', render: (r) => r.is_system ? '✓' : '-' }
       ]} rows={rows}
         actions={(r) => (
           <div className="flex justify-end gap-1">
             <button className="btn-secondary btn-sm" disabled={r.name === 'SUPER_ADMIN'}
-              onClick={() => { setEditing(r); setPerms(new Set(JSON.parse(r.permissions || '[]'))); setOpen(true) }}><Pencil size={13} /></button>
-            {!r.is_system && <button className="btn-secondary btn-sm text-red-600" onClick={() => window.api.roles.delete(r.id).then(load).catch((e) => toast.push('error', errMsg(e)))}><Trash2 size={13} /></button>}
+              onClick={() => { setEditing(r); setPerms(new Set(JSON.parse(r.permissions || '[]'))); setDescription(r.description || ''); setOpen(true) }}><Pencil size={13} /></button>
+            {!r.is_system && <button className="btn-secondary btn-sm text-red-600" onClick={() => { setDeleting(r); setReassignTo('') }}><Trash2 size={13} /></button>}
           </div>
         )} />
       <Modal open={open} onClose={() => setOpen(false)} title={t('security_roles')} width="max-w-2xl">
@@ -366,12 +401,17 @@ function RolesTab() {
                 onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
               {isSystem && <p className="text-[10px] text-slate-400 mt-1">{lang === 'bn' ? 'System role — শুধু permissions পরিবর্তন করা যাবে' : 'System role — only its permissions can be edited'}</p>}
             </div>
+            <div className="mt-2"><label className="label">{lang === 'bn' ? 'বিবরণ' : 'Description'}</label>
+              <input className="input" value={description} onChange={(e) => setDescription(e.target.value)}
+                placeholder={lang === 'bn' ? 'এই role-এর কাজ কী (ঐচ্ছিক)' : 'What this role is for (optional)'} />
+            </div>
             <div className="flex items-center justify-between mt-3 mb-1">
               <label className="label mb-0">{t('permissions')}</label>
-              <div className="flex gap-1">
+              <div className="flex gap-1 items-center">
+                <span className="text-xs font-semibold text-brand-700 dark:text-brand-400 px-2">{lang === 'bn' ? 'নির্বাচিত' : 'Selected'}: {perms.size}</span>
                 <button type="button" className="btn-secondary btn-sm"
                   onClick={() => setPerms(new Set([...PERMISSION_CATALOG.map((m) => m.module), ...EXTRA_MODULES]))}>{lang === 'bn' ? 'সব সিলেক্ট' : 'Select all'}</button>
-                <button type="button" className="btn-secondary btn-sm" onClick={() => setPerms(new Set())}>{lang === 'bn' ? 'ক্লিয়ার' : 'Clear'}</button>
+                <button type="button" className="btn-secondary btn-sm" onClick={() => setPerms(new Set())}>{lang === 'bn' ? 'ক্লিয়ার' : 'Deselect all'}</button>
               </div>
             </div>
             <p className="text-[10px] text-slate-400 mb-2">{lang === 'bn'
@@ -423,6 +463,35 @@ function RolesTab() {
             </div>
           </>
         )}
+      </Modal>
+
+      {/* delete confirm → safe reassignment when the role has users */}
+      <ConfirmDialog
+        open={!!deleting && !deleting._inUse}
+        onClose={() => setDeleting(null)}
+        onConfirm={() => doDelete()}
+        title={t('delete')}
+        message={`${deleting?.name} — ${t('confirmDelete')}`}
+      />
+      <Modal open={!!deleting?._inUse} onClose={() => setDeleting(null)} title={t('delete') + ' — ' + (deleting?.name || '')} width="max-w-md">
+        <div className="space-y-3">
+          <p className="text-sm">{lang === 'bn'
+            ? 'এই role এখনো ইউজারদের কাছে assigned — মুছতে হলে তাদের অন্য একটি role-এ সরিয়ে নিন।'
+            : 'This role is still assigned to users — reassign them to another role before deleting.'}</p>
+          <div>
+            <label className="label">{lang === 'bn' ? 'নতুন role (ইউজারদের জন্য)' : 'New role for these users'} *</label>
+            <select className="input" value={reassignTo} onChange={(e) => setReassignTo(e.target.value)}>
+              <option value="">—</option>
+              {rows.filter((r) => r.id !== deleting?.id).map((r) => (
+                <option key={r.id} value={r.id}>{r.name}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex justify-end gap-2">
+            <button className="btn-secondary" onClick={() => setDeleting(null)}>{t('cancel')}</button>
+            <button className="btn-danger" disabled={!reassignTo} onClick={() => doDelete(Number(reassignTo))}>{t('delete')}</button>
+          </div>
+        </div>
       </Modal>
     </div>
   )
