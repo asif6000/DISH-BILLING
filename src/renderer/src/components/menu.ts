@@ -22,7 +22,6 @@ export const MENU: MenuGroup[] = [
     labelKey: 'm_reports_group', icon: 'BarChart3',
     children: [
       { labelKey: 'm_bill_report', path: '/reports/bills', icon: 'Printer', perm: 'reports' },
-      { labelKey: 'm_collection', path: '/payments', icon: 'TrendingUp', perm: 'payments' },
       { labelKey: 'm_collection_history', path: '/payments/history', icon: 'History', perm: 'payments' },
       { labelKey: 'm_reseller_collection', path: '/collectors/report', icon: 'Users', perm: 'reports' },
       { labelKey: 'm_warning_message', path: '/messages/reminders', icon: 'Send', perm: 'messaging' }
