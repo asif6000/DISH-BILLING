@@ -16,7 +16,23 @@ const CRUD: PermAction[] = [
 ]
 
 export const PERMISSION_CATALOG: PermModule[] = [
-  { module: 'dashboard', label: 'Dashboard', labelBn: 'ড্যাশবোর্ড', actions: [{ key: 'view', label: 'View', labelBn: 'দেখা' }] },
+  { module: 'dashboard', label: 'Dashboard', labelBn: 'ড্যাশবোর্ড', actions: [
+    { key: 'view', label: 'View', labelBn: 'দেখা' },
+    // Collector Dashboard KPI cards (collector-scoped statistics)
+    { key: 'kpi_today', label: 'Collector KPI: Today\'s Collection', labelBn: 'কালেক্টর KPI: আজকের কালেকশন' },
+    { key: 'kpi_month', label: 'Collector KPI: This Month\'s Collection', labelBn: 'কালেক্টর KPI: এই মাসের কালেকশন' },
+    { key: 'kpi_total', label: 'Collector KPI: Total Collection', labelBn: 'কালেক্টর KPI: সর্বমোট কালেকশন' },
+    { key: 'kpi_cash', label: 'Collector KPI: Cash Collection', labelBn: 'কালেক্টর KPI: নগদ কালেকশন' },
+    { key: 'kpi_bkash', label: 'Collector KPI: bKash Collection', labelBn: 'কালেক্টর KPI: বিকাশ কালেকশন' },
+    { key: 'kpi_nagad', label: 'Collector KPI: Nagad Collection', labelBn: 'কালেক্টর KPI: নগদ (ন্যাগাদ) কালেকশন' },
+    { key: 'kpi_rocket', label: 'Collector KPI: Rocket Collection', labelBn: 'কালেক্টর KPI: রকেট কালেকশন' },
+    { key: 'kpi_bank', label: 'Collector KPI: Bank Collection', labelBn: 'কালেক্টর KPI: ব্যাংক কালেকশন' },
+    { key: 'kpi_customers', label: 'Collector KPI: Assigned Customers', labelBn: 'কালেক্টর KPI: অ্যাসাইন করা গ্রাহক' },
+    { key: 'kpi_due', label: 'Collector KPI: Due in My Areas', labelBn: 'কালেক্টর KPI: আমার এরিয়ার বকেয়া' },
+    { key: 'kpi_target', label: 'Collector KPI: Collection Target', labelBn: 'কালেক্টর KPI: কালেকশন টার্গেট' },
+    { key: 'kpi_performance', label: 'Collector KPI: Performance', labelBn: 'কালেক্টর KPI: পারফরম্যান্স' },
+    { key: 'kpi_history', label: 'Collector KPI: My Collection History', labelBn: 'কালেক্টর KPI: আমার কালেকশন ইতিহাস' }
+  ] },
   { module: 'customers', label: 'Customer Management', labelBn: 'গ্রাহক ব্যবস্থাপনা', actions: CRUD },
   { module: 'billing', label: 'Billing', labelBn: 'বিলিং', actions: [...CRUD] },
   { module: 'payments', label: 'Payment Collection', labelBn: 'পেমেন্ট কালেকশন', actions: [
@@ -49,6 +65,11 @@ export const PERMISSION_CATALOG: PermModule[] = [
     { key: 'send', label: 'Send', labelBn: 'পাঠানো' },
     { key: 'manage', label: 'Manage Templates', labelBn: 'টেমপ্লেট ম্যানেজ' }
   ] },
+  { module: 'sms', label: 'SMS Wallet', labelBn: 'এসএমএস ওয়ালেট', actions: [
+    { key: 'view', label: 'View Own Wallet / History', labelBn: 'নিজের ওয়ালেট/হিস্ট্রি দেখা' },
+    { key: 'buy', label: 'Buy SMS Package', labelBn: 'এসএমএস প্যাকেজ কেনা' },
+    { key: 'send', label: 'Send SMS (deducts own wallet)', labelBn: 'এসএমএস পাঠানো (নিজের ওয়ালেট কাটবে)' }
+  ] },
   { module: 'complaints', label: 'Complaints', labelBn: 'অভিযোগ', actions: CRUD },
   { module: 'resellers', label: 'Resellers', labelBn: 'রিসেলার', actions: CRUD },
   { module: 'accounts', label: 'Accounts', labelBn: 'হিসাব', actions: CRUD },
@@ -66,6 +87,17 @@ export const PERMISSION_CATALOG: PermModule[] = [
     { key: 'edit', label: 'Edit', labelBn: 'সম্পাদনা' }
   ] }
 ]
+
+// Collector Dashboard KPI cards — each card is a granular permission key
+// ('dashboard.kpi.*'). Assignment works through the EXISTING permission system:
+// role-level via Security → Roles, per-collector overrides via the per-user
+// grant editor (Security → Users). Module key 'dashboard' still implies ALL
+// cards (legacy behaviour for admins/managers).
+export const COLLECTOR_KPI_KEYS = [
+  'kpi_today', 'kpi_month', 'kpi_total', 'kpi_cash', 'kpi_bkash', 'kpi_nagad',
+  'kpi_rocket', 'kpi_bank', 'kpi_customers', 'kpi_due', 'kpi_target',
+  'kpi_performance', 'kpi_history'
+] as const
 
 export function permKey(module: string, action: string): string {
   return `${module}.${action}`

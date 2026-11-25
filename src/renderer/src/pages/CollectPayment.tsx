@@ -4,7 +4,7 @@ import { Banknote, Smartphone, Building, RefreshCw } from 'lucide-react'
 import { useI18n } from '../lib/i18n'
 import { money, todayStr } from '../lib/format'
 import { Modal, useToast, PageHeader } from '../components/ui'
-import { CollectorPicker, useCollectors } from '../components/CollectorPicker'
+import { CollectorPicker } from '../components/CollectorPicker'
 import { errMsg } from '../lib/api'
 
 export default function CollectPayment({ mode }: { mode?: 'refund' }) {
@@ -20,19 +20,9 @@ export default function CollectPayment({ mode }: { mode?: 'refund' }) {
   const [busy, setBusy] = useState(false)
   const [formErr, setFormErr] = useState('')
   const [attempted, setAttempted] = useState(false)
-  const { list: collectors } = useCollectors()
-
-  // if the logged-in user is a collector (name matches a collector record),
-  // auto-attribute the collection to them
-  useEffect(() => {
-    if (!collectors.length) return
-    window.api.auth.check().then((r: any) => {
-      const u = r?.user
-      if (!u?.fullName) return
-      const me = collectors.find((c: any) => (c.label || '').trim().toLowerCase() === String(u.fullName).trim().toLowerCase())
-      if (me) setF((x: any) => ({ ...x, collectorId: String(me.id) }))
-    }).catch(() => {})
-  }, [collectors])
+  // collector auto-selection is server-driven: CollectorPicker resolves the
+  // logged-in account's own collector profile via payments:myCollector and
+  // locks the field for collector accounts (no client-side name guessing)
 
   useEffect(() => {
     let alive = true
@@ -77,7 +67,8 @@ export default function CollectPayment({ mode }: { mode?: 'refund' }) {
       // NO automatic receipt popup/print: users print receipts manually from
       // Collection History or the Monthly Bill Statement (kept intact).
       toast.push('success', `${t('saved')} — ${t('receipt')}: ${result.receiptNo}`)
-      setF({ customerId: '', amount: '', method: 'cash', reference: '', note: '', date: todayStr(), type: mode === 'refund' ? 'refund' : 'bill' })
+      // reset but keep the locked-in collector identity (server enforces it anyway)
+      setF((x: any) => ({ customerId: '', amount: '', method: 'cash', reference: '', note: '', date: todayStr(), type: mode === 'refund' ? 'refund' : 'bill', collectorId: x.collectorId }))
       setSelected(null)
       setSearch('')
     } catch (e) {

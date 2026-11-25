@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { Building2, Save, Database, HardDriveDownload, ImageUp, X } from 'lucide-react'
+import { Building2, Save, ImageUp, X } from 'lucide-react'
 import { useI18n } from '../lib/i18n'
 import { PageHeader, useToast, useReflist } from '../components/ui'
 import { errMsg } from '../lib/api'
@@ -15,7 +15,6 @@ export default function SettingsPage() {
   const { t, lang, setLang } = useI18n()
   const toast = useToast()
   const [s, setS] = useState<Record<string, string>>({})
-  const [dbPath, setDbPath] = useState('')
   const [busy, setBusy] = useState(false)
   const [isSuper, setIsSuper] = useState(false)
   const [canEditCompany, setCanEditCompany] = useState(false)
@@ -24,7 +23,6 @@ export default function SettingsPage() {
   useEffect(() => {
     // previously saved company information loads automatically on open
     window.api.settings.getAll().then(setS).catch(() => {})
-    window.api.backup.dir().then(setDbPath).catch(() => {})
     window.api.auth.check().then((r: any) => {
       const perms: string[] = r?.user?.permissions || []
       setIsSuper(perms.includes('all') || perms.includes('settings'))
@@ -75,14 +73,6 @@ export default function SettingsPage() {
     finally { setBusy(false) }
   }
 
-  const checkIntegrity = async () => {
-    try {
-      const ok = await window.api.backup.integrity()
-      ok ? toast.push('success', '✓ ' + (lang === 'bn' ? 'ডাটাবেস ঠিক আছে' : 'Database OK'))
-        : toast.push('error', lang === 'bn' ? 'ডাটাবেসে সমস্যা!' : 'Database corrupted!')
-    } catch (e) { toast.push('error', errMsg(e)) }
-  }
-
   const input = (k: string, label: string, type = 'text') => (
     <div>
       <label className="label">{label}</label>
@@ -104,14 +94,13 @@ export default function SettingsPage() {
           <div className="space-y-3">
             {canEdit ? (
               <>
-                {/* editable company profile: name/mobile required, plus alt mobile, email, address, logo */}
+                {/* editable company profile: name/mobile required, plus alt mobile, address, logo */}
                 {input('company_name', t('companyName') + (lang === 'bn' ? ' (EN) *' : ' *'))}
                 {input('company_name_bn', t('companyName') + ' (বাংলা)')}
                 <div className="grid grid-cols-2 gap-3">
                   {input('company_mobile', t('companyMobile'))}
                   {input('company_mobile_alt', t('companyMobileAlt'))}
                 </div>
-                {input('company_email', t('companyEmail'))}
                 {input('company_address', t('companyAddress'))}
                 <div>
                   <label className="label">{t('companyLogo')}</label>
@@ -139,7 +128,6 @@ export default function SettingsPage() {
                 <p><b>{s.company_name || '—'}</b></p>
                 {s.company_name_bn && <p className="text-slate-500">{s.company_name_bn}</p>}
                 <p className="text-slate-500">📞 {s.company_mobile || '—'}</p>
-                {s.company_email && <p className="text-slate-500">✉ {s.company_email}</p>}
                 <p className="text-xs text-amber-600 mt-2">{lang === 'bn' ? 'শুধু দেখা যাচ্ছে — সম্পাদনার অনুমতি নেই' : 'View only — you cannot edit company settings'}</p>
               </div>
             )}
@@ -180,16 +168,6 @@ export default function SettingsPage() {
         </div>
         )}
       </div>
-      {isSuper && (
-      <div className="card p-4 mt-4">
-        <h3 className="font-semibold text-sm mb-3 flex items-center gap-2"><Database size={16} className="text-brand-600" /> {t('settings_system')}</h3>
-        <div className="text-xs text-slate-500 space-y-1">
-          <p><b>{t('databasePath')}:</b> <span className="font-mono">{dbPath}/../ava-cable.db</span></p>
-          <p>{lang === 'bn' ? 'ডেটা ইনস্টলেশন ফোল্ডারের বাইরে (AppData) সংরক্ষিত — সফটওয়্যার আপডেট বা রিইনস্টলে ডেটা নিরাপদ থাকে।' : 'Data is stored in AppData (outside installation folder) — safe across updates and reinstalls.'}</p>
-        </div>
-        <button className="btn-secondary btn-sm mt-3" onClick={checkIntegrity}><HardDriveDownload size={14} /> {t('integrityCheck')}</button>
-      </div>
-      )}
     </div>
   )
 }

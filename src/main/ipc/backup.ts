@@ -1,8 +1,8 @@
 import { ipcMain, app, dialog } from 'electron'
 import * as fs from 'fs'
 import * as path from 'path'
-import { getDb, getDbPath, initDb, integrityCheck, logActivity, getSetting } from '../db'
-import { requirePermission, sessions } from './auth'
+import { getPrimaryDb, getDbPath, initDb, integrityCheck, logActivity, getSetting } from '../db'
+import { requirePermission, requirePermissionNoImpersonation, dropAllSessionsForRestore } from './auth'
 
 export function backupsDir(): string {
   const custom = getSetting('backup_dir', '')
@@ -17,8 +17,11 @@ export function ensureBackupsDir(): string {
 }
 
 export function checkpointAndCopy(target: string): void {
-  const db = getDb()
-  try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)') } catch { /* ignore */ }
+  // Backups are INSTALLATION-level (users, roles, audit, subscription and the
+  // super admin's own data). Always checkpoint the primary connection, never
+  // the workspace that happens to be active in the requesting window.
+  const conn = getPrimaryDb()
+  try { conn.exec('PRAGMA wal_checkpoint(TRUNCATE)') } catch { /* ignore */ }
   fs.copyFileSync(getDbPath(), target)
 }
 
@@ -43,8 +46,10 @@ function pruneBackups(dir: string, keep: number): void {
 
 export function registerBackupIpc(): void {
   ipcMain.handle('backup:create', async (e, targetPath?: string) => {
-    // mutating backup operations need security.manage; viewing needs only view
-    const s = requirePermission(e, 'security', 'manage')
+    // mutating backup operations need security.manage; viewing needs only view.
+    // Impersonated sessions may not create backups (they would snapshot the
+    // installation data while the UI shows another account).
+    const s = requirePermissionNoImpersonation(e, 'security', 'manage')
     let target = targetPath
     if (!target) {
       const win = require('electron').BrowserWindow.fromWebContents(e.sender)
@@ -62,7 +67,7 @@ export function registerBackupIpc(): void {
   })
 
   ipcMain.handle('backup:restore', async (e, sourcePath?: string) => {
-    const s = requirePermission(e, 'security', 'manage')
+    const s = requirePermissionNoImpersonation(e, 'security', 'manage')
     let source = sourcePath
     if (!source) {
       const win = require('electron').BrowserWindow.fromWebContents(e.sender)
@@ -78,8 +83,11 @@ export function registerBackupIpc(): void {
     const header = fs.readFileSync(source).subarray(0, 15).toString('utf8')
     if (!header.startsWith('SQLite format 3')) throw new Error('NOT_A_SQLITE_DB')
     // close current db, replace file, re-init
-    const db = getDb()
+    const db = getPrimaryDb()
     try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)') } catch { /* ignore */ }
+    // end every session/impersonation first: after initDb the window scopes are
+    // gone, and a live target session must never fall back to installation data
+    dropAllSessionsForRestore()
     db.close()
     const live = getDbPath()
     fs.copyFileSync(live, live + '.before-restore')

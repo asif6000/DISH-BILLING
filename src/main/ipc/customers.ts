@@ -2,9 +2,33 @@ import { ipcMain } from 'electron'
 import { CustomerFilters } from '../../shared/types'
 import { getDb, logActivity, nextSeq, today } from '../db'
 import { requirePermission } from './auth'
+import { resolveSessionCollector, collectorCustomerWhere } from './payments'
+
+// Previous-due amount: reject NaN/Infinity/negative values and round to paisa.
+function nonNegativeAmount(value: any): number {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : 0
+}
+
+// Optional collector assignment coming from the customer form / inline dropdown.
+// - undefined → "field not sent", the caller keeps the existing value
+// - null/''   → explicitly unassign
+// - number    → must be an ACTIVE collector
+// Collector accounts are locked to their own profile and can never assign.
+function resolveAssignableCollector(db: any, value: any, locked: boolean): number | null | undefined {
+  if (value === undefined) return undefined
+  if (locked) return undefined
+  if (value === null || value === '') return null
+  const id = Number(value)
+  if (!Number.isInteger(id) || id <= 0) return null
+  const col = db.prepare("SELECT id FROM collectors WHERE id = ? AND status = 'active'").get(id) as any
+  if (!col) throw new Error('COLLECTOR_NOT_FOUND')
+  return id
+}
 
 const CUSTOMER_SELECT = `
   SELECT c.*, c.customer_serial, a.name AS _area, z.name AS _zone, p.name AS _package, p.type AS _package_type,
+    col.id AS _collector_id, st_col.name AS _collector_name,
     r.name AS _reseller, br.name AS _branch,
     COALESCE((SELECT SUM(b.total - b.paid) FROM bills b WHERE b.customer_id = c.id AND b.status != 'cancelled'), 0) AS total_due,
     (SELECT MAX(b.month) FROM bills b WHERE b.customer_id = c.id) AS last_bill_month
@@ -14,12 +38,19 @@ const CUSTOMER_SELECT = `
   LEFT JOIN packages p ON p.id = c.package_id
   LEFT JOIN resellers r ON r.id = c.reseller_id
   LEFT JOIN branches br ON br.id = c.branch_id
+  LEFT JOIN collectors col ON col.id = c.collector_id
+  LEFT JOIN staff st_col ON st_col.id = col.staff_id
 `
 
 export function registerCustomerIpc(): void {
   ipcMain.handle('customers:list', (e, params: CustomerFilters = {}) => {
-    requirePermission(e, 'customers', 'view')
+    const s = requirePermission(e, 'customers', 'view')
     const db = getDb()
+    const me = resolveSessionCollector(db, s)
+    if (me.locked) {
+      if (me.error) throw new Error(me.error)
+      if (me.id == null) throw new Error('NO_COLLECTOR_PROFILE')
+    }
     const page = Math.max(1, params.page || 1)
     const pageSize = params.all ? 100000 : Math.min(200, Math.max(5, params.pageSize || 20))
     const where: string[] = []
@@ -33,9 +64,9 @@ export function registerCustomerIpc(): void {
     }
     const status = params.status
     if (status === 'due') {
-      where.push(`c.status = 'active' AND (SELECT SUM(b.total - b.paid) FROM bills b WHERE b.customer_id = c.id AND b.status != 'cancelled') > 0`)
+      where.push(`c.status = 'active' AND (c.previous_due_bill > 0 OR (SELECT SUM(b.total - b.paid) FROM bills b WHERE b.customer_id = c.id AND b.status != 'cancelled') > 0)`)
     } else if (status === 'paid') {
-      where.push(`c.status = 'active' AND (SELECT SUM(b.total - b.paid) FROM bills b WHERE b.customer_id = c.id AND b.status != 'cancelled') = 0
+      where.push(`c.status = 'active' AND c.previous_due_bill = 0 AND (SELECT SUM(b.total - b.paid) FROM bills b WHERE b.customer_id = c.id AND b.status != 'cancelled') = 0
         AND EXISTS (SELECT 1 FROM bills b WHERE b.customer_id = c.id)`)
     } else if (status === 'expired') {
       where.push(`c.status = 'active' AND (SELECT SUM(b.total - b.paid) FROM bills b WHERE b.customer_id = c.id AND b.status != 'cancelled') >
@@ -43,12 +74,29 @@ export function registerCustomerIpc(): void {
     } else if (status === 'free') {
       // free = free-type package OR the Paid/Free connection dropdown set to Free
       where.push(`c.status = 'active' AND (p.type = 'free' OR c.connection_type = 'free')`)
+    } else if (status === 'disconnected') {
+      // "Disconnected Customers" covers both states: older/existing accounts
+      // often use inactive, while the status dialog can set disconnected.
+      where.push(`c.status IN ('inactive', 'disconnected')`)
     } else if (status) {
       where.push(`c.status = ?`)
       args.push(status)
     }
     if (params.areaId) { where.push('c.area_id = ?'); args.push(params.areaId) }
     if (params.packageId) { where.push('c.package_id = ?'); args.push(params.packageId) }
+    if (params.collectorId) {
+      // A collector's scope is the SAME rule used for access control everywhere
+      // else (collectorCustomerWhere): customers explicitly assigned to them OR
+      // unassigned customers sitting in one of their areas. Filtering only on
+      // customers.collector_id made the admin "Assigned Collector" dropdown look
+      // empty even though the collector really does collect those customers.
+      where.push(collectorCustomerWhere(Number(params.collectorId)))
+    }
+    if (params.dueOnly) {
+      where.push(`(COALESCE((SELECT SUM(b.total - b.paid) FROM bills b WHERE b.customer_id = c.id AND b.status != 'cancelled'),0) > 0 OR c.previous_due_bill > 0)`)
+    }
+    if (params.previousDueOnly) where.push('c.previous_due_bill > 0')
+    if (me.locked && me.id != null) where.push(collectorCustomerWhere(me.id))
     const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : ''
     const total = (db.prepare(`SELECT COUNT(*) AS c FROM customers c LEFT JOIN packages p ON p.id = c.package_id ${whereSql}`).get(...args) as { c: number }).c
     const sort = params.sort === 'code' || params.sort === 'name' || params.sort === 'total_due' ? params.sort : 'c.code'
@@ -59,8 +107,16 @@ export function registerCustomerIpc(): void {
   })
 
   ipcMain.handle('customers:get', (e, id: number) => {
-    requirePermission(e, 'customers', 'view')
+    const s = requirePermission(e, 'customers', 'view')
     const db = getDb()
+    const me = resolveSessionCollector(db, s)
+    if (me.locked) {
+      if (me.error) throw new Error(me.error)
+      if (me.id == null) throw new Error('NO_COLLECTOR_PROFILE')
+      if (!db.prepare(`SELECT 1 FROM customers c WHERE c.id = ? AND ${collectorCustomerWhere(me.id)}`).get(id)) {
+        throw new Error('CUSTOMER_NOT_ASSIGNED_TO_COLLECTOR')
+      }
+    }
     const customer = db.prepare(`${CUSTOMER_SELECT} WHERE c.id = ?`).get(id)
     if (!customer) return null
     const bills = db.prepare('SELECT * FROM bills WHERE customer_id = ? ORDER BY month DESC LIMIT 36').all(id)
@@ -74,6 +130,7 @@ export function registerCustomerIpc(): void {
   ipcMain.handle('customers:create', (e, data: any) => {
     const s = requirePermission(e, 'customers', 'create')
     const db = getDb()
+    const me = resolveSessionCollector(db, s)
     if (!data.name || !data.mobile) throw new Error('REQUIRED:name,mobile')
     if (!/^01[3-9]\d{8}$/.test(String(data.mobile).trim())) throw new Error('INVALID_MOBILE')
     const code = nextSeq('customer_seq', 5, 'AVA-')
@@ -84,16 +141,19 @@ export function registerCustomerIpc(): void {
     const connType = data.connection_type === 'free' ? 'free' : 'paid'
     const monthlyBill = connType === 'free' ? 0 : (Number(data.monthly_bill) || 0)
     const connFee = connType === 'free' ? 0 : (Number(data.connection_fee) || 0)
+    const previousDue = nonNegativeAmount(data.previous_due_bill)
     const serial = data.customer_serial != null && String(data.customer_serial).trim() !== '' ? Math.trunc(Number(data.customer_serial)) : null
     if (serial != null && (isNaN(serial) || serial < 0)) throw new Error('INVALID_SERIAL')
+    // optional collector assignment right in the New Connection form
+    const assignCollector = resolveAssignableCollector(db, data.collector_id, me.locked) ?? null
     const r = db.prepare(`INSERT INTO customers
       (code, name, father_name, mobile, address, area_id, sub_area_id, road_id, branch_id, reseller_id,
-       connection_date, package_id, monthly_bill, connection_fee, status, nid, note, customer_serial, connection_type)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+       connection_date, package_id, monthly_bill, connection_fee, previous_due_bill, status, nid, note, customer_serial, connection_type, collector_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(code, data.name.trim(), data.father_name || null, String(data.mobile).trim(), data.address || null,
         data.area_id || null, data.sub_area_id || null, data.road_id || null, data.branch_id || null, data.reseller_id || null,
         data.connection_date || today(), data.package_id || null, monthlyBill,
-        connFee, data.status || 'active', data.nid || null, data.note || null, serial, connType)
+        connFee, previousDue, data.status || 'active', data.nid || null, data.note || null, serial, connType, assignCollector)
     const customerId = Number(r.lastInsertRowid)
     db.prepare('INSERT INTO customer_connections (customer_id, action, to_value, date, note, created_by) VALUES (?,?,?,?,?,?)')
       .run(customerId, 'new', 'connection', data.connection_date || today(), 'New connection', s.username)
@@ -186,6 +246,7 @@ export function registerCustomerIpc(): void {
   ipcMain.handle('customers:update', (e, id: number, data: any) => {
     const s = requirePermission(e, 'customers', 'edit')
     const db = getDb()
+    const me = resolveSessionCollector(db, s)
     const old = db.prepare('SELECT * FROM customers WHERE id = ?').get(id) as any
     if (!old) throw new Error('NOT_FOUND')
     if (data.mobile && !/^01[3-9]\d{8}$/.test(String(data.mobile).trim())) throw new Error('INVALID_MOBILE')
@@ -194,16 +255,20 @@ export function registerCustomerIpc(): void {
     if (data.connection_type != null && !['paid', 'free'].includes(data.connection_type)) throw new Error('INVALID_CONNECTION_TYPE')
     const newConnType = data.connection_type === 'free' || data.connection_type === 'paid' ? data.connection_type : (old.connection_type || 'paid')
     const isFree = newConnType === 'free'
+    const nextCollector = resolveAssignableCollector(db, data.collector_id, me.locked)
+    const previousDue = data.previous_due_bill === undefined
+      ? nonNegativeAmount(old.previous_due_bill)
+      : nonNegativeAmount(data.previous_due_bill)
     db.prepare(`UPDATE customers SET name=?, father_name=?, mobile=?, address=?, area_id=?, sub_area_id=?, road_id=?,
-      branch_id=?, reseller_id=?, connection_date=?, package_id=?, monthly_bill=?, connection_fee=?, status=?, nid=?, note=?, customer_serial=?, connection_type=? WHERE id=?`)
+      branch_id=?, reseller_id=?, connection_date=?, package_id=?, monthly_bill=?, connection_fee=?, previous_due_bill=?, status=?, nid=?, note=?, customer_serial=?, connection_type=?, collector_id=? WHERE id=?`)
       .run(data.name ?? old.name, data.father_name ?? old.father_name, data.mobile ?? old.mobile,
         data.address ?? old.address, data.area_id ?? old.area_id, data.sub_area_id ?? old.sub_area_id,
         data.road_id ?? old.road_id, data.branch_id ?? old.branch_id, data.reseller_id ?? old.reseller_id,
         data.connection_date ?? old.connection_date, data.package_id ?? old.package_id,
         isFree ? 0 : (data.monthly_bill ?? old.monthly_bill), isFree ? 0 : (data.connection_fee ?? old.connection_fee),
-        data.status ?? old.status, data.nid ?? old.nid, data.note ?? old.note,
+        previousDue, data.status ?? old.status, data.nid ?? old.nid, data.note ?? old.note,
         data.customer_serial !== undefined ? (data.customer_serial === null || String(data.customer_serial).trim() === '' ? null : Math.trunc(Number(data.customer_serial)) || null) : old.customer_serial,
-        newConnType, id)
+        newConnType, nextCollector === undefined ? old.collector_id : nextCollector, id)
     // package change → upgrade/downgrade log
     if (data.package_id && data.package_id !== old.package_id) {
       const oldP = old.package_id ? db.prepare('SELECT name FROM packages WHERE id=?').get(old.package_id) as any : null
@@ -326,6 +391,40 @@ export function registerCustomerIpc(): void {
     return getDb().prepare(`${CUSTOMER_SELECT} WHERE c.status = 'active'
       AND (SELECT SUM(b.total - b.paid) FROM bills b WHERE b.customer_id = c.id AND b.status != 'cancelled') > 0
       ORDER BY total_due DESC`).all()
+  })
+
+  // ---- customer↔collector assignment (admin-only; collector accounts can never reassign) ----
+  // Assign / reassign / remove: collectorId null = remove assignment. One active
+  // primary assignment per customer (customers.collector_id). Payment history is
+  // never touched — receipts keep their original payments.collector_id.
+  ipcMain.handle('customers:setCollector', (e, customerIds: number[], collectorId: number | null) => {
+    const s = requirePermission(e, 'customers', 'edit')
+    const db = getDb()
+    const me = resolveSessionCollector(db, s)
+    if (me.locked) throw new Error('PERMISSION_DENIED:customers') // collector accounts cannot assign
+    const ids = (Array.isArray(customerIds) ? customerIds : []).map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0)
+    if (!ids.length) throw new Error('NO_CUSTOMERS')
+    if (collectorId != null) {
+      const col = db.prepare("SELECT id FROM collectors WHERE id = ? AND status = 'active'").get(collectorId) as any
+      if (!col) throw new Error('COLLECTOR_NOT_FOUND')
+    }
+    const ph = ids.map(() => '?').join(',')
+    db.prepare(`UPDATE customers SET collector_id = ${collectorId == null ? 'NULL' : '?'} WHERE id IN (${ph})`)
+      .run(...(collectorId != null ? [collectorId, ...ids] : ids))
+    logActivity(s.userId, s.username, 'assign_collector', 'customers', `${collectorId ?? 'unassigned'} → ${ids.length} customer(s)`)
+    return true
+  })
+
+  // per-collector assigned customer counts (assignment manager + collector picker badges)
+  ipcMain.handle('customers:assignmentCounts', (e) => {
+    requirePermission(e, 'customers', 'view')
+    const db = getDb()
+    return db.prepare(`SELECT col.id, st.name AS label, COUNT(c.id) AS assigned
+      FROM collectors col
+      JOIN staff st ON st.id = col.staff_id
+      LEFT JOIN customers c ON c.collector_id = col.id
+      WHERE col.status = 'active'
+      GROUP BY col.id ORDER BY st.name`).all()
   })
 
   ipcMain.handle('connections:history', (e, params: any = {}) => {

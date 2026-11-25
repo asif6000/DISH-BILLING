@@ -1,0 +1,8 @@
+# Supabase CLI configuration for the secure BulkSMSBD gateway function.
+#
+# JWT verification is disabled because this app authenticates users LOCALLY and
+# the Edge Function is called server-to-server by the Electron main process.
+# The function itself requires the private SMS_GATEWAY_TOKEN bearer secret, so
+# the public anon key alone can never send SMS or read the provider balance.
+[functions.bulksmsbd]
+verify_jwt = false

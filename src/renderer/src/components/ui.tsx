@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { X, AlertTriangle, CheckCircle2, XCircle, Loader2 } from 'lucide-react'
 import { useI18n } from '../lib/i18n'
 
@@ -13,8 +13,9 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     setToasts((ts) => [...ts, { id, type, text }])
     setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== id)), 4200)
   }, [])
+  const ctx = useMemo(() => ({ push }), [push])
   return (
-    <ToastCtx.Provider value={{ push }}>
+    <ToastCtx.Provider value={ctx}>
       {children}
       <div className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 w-80">
         {toasts.map((t) => (

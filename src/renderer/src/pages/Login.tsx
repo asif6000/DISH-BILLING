@@ -14,6 +14,7 @@ export default function Login({ onLogin }: { onLogin: (u: UserInfo) => void }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
+  const [help, setHelp] = useState<any>(null)
   const [busy, setBusy] = useState(false)
 
   // signup dialog
@@ -46,14 +47,74 @@ export default function Login({ onLogin }: { onLogin: (u: UserInfo) => void }) {
     e.preventDefault()
     setBusy(true)
     setError('')
+    setHelp(null)
     try {
       const r = await window.api.auth.login(username.trim(), password)
       onLogin(r.user)
     } catch (err) {
       const m = errMsg(err)
+      if (m.includes('ACCOUNT_PENDING') || m.includes('ACCOUNT_INACTIVE') || m.includes('INVALID_CREDENTIALS')) {
+        // ask the main process WHY (status only — never a password/hash)
+        const h: any = await (window.api.auth as any).loginHelp?.(username.trim()).catch(() => null)
+        setHelp(h)
+        // a pending account that is already approved remotely activates within
+        // the 30s poll — tell the user instead of leaving them stuck
+        if (m.includes('ACCOUNT_PENDING')) window.api.userAccounts.checkRemote().catch(() => null)
+        // the account exists in Supabase but not on this installation yet:
+        // sync once (auto-provision creates the local account) and retry the
+        // same password immediately — no restart, no waiting for the poll
+        if (h && !h.local && h.remote?.status === 'approved') {
+          const sync: any = await window.api.userAccounts.checkRemote().catch(() => null)
+          if (sync?.provisioned?.length || sync?.activated?.length) {
+            try {
+              const r2 = await window.api.auth.login(username.trim(), password)
+              onLogin(r2.user)
+              return
+            } catch { /* still no matching password → show the guidance below */ }
+          }
+        }
+      }
       setError(m.includes('INVALID_CREDENTIALS') ? t('loginError')
-        : m.includes('UPDATE_REQUIRED') ? t('updMust') : m)
+        : m.includes('ACCOUNT_PENDING') ? (lang === 'bn' ? 'এই অ্যাকাউন্ট এখনো approved নয়' : 'This account is not approved yet')
+          : m.includes('ACCOUNT_INACTIVE') ? (lang === 'bn' ? 'এই অ্যাকাউন্ট নিষ্ক্রিয় করা আছে' : 'This account has been deactivated')
+            : m.includes('UPDATE_REQUIRED') ? t('updMust') : m)
     } finally { setBusy(false) }
+  }
+
+  // actionable guidance under the error box (username vs company name, local
+  // account missing, pending approval, wrong password …)
+  const helpLines: string[] = []
+  if (help) {
+    if (help.suggestion) {
+      helpLines.push(lang === 'bn'
+        ? `ইউজারনেম হলো “${help.suggestion}” — নাম/কোম্পানির নাম নয়। এটাই দিয়ে আবার চেষ্টা করুন।`
+        : `The username is “${help.suggestion}” — not the name/company name. Try that.`)
+    }
+    if (!help.local && help.remote) {
+      helpLines.push(lang === 'bn'
+        ? `Supabase-এ অ্যাকাউন্ট আছে (${help.remote.status}) কিন্তু এই ইনস্টলে লোকাল অ্যাকাউন্ট নেই — সুপার অ্যাডমিন Security → Supabase User Management থেকে “Create local account” করুন।`
+        : `The account exists in Supabase (${help.remote.status}) but not on this installation — a super admin can create it from Security → Supabase User Management ("Create local account").`)
+    }
+    if (help.local?.status === 'pending') {
+      helpLines.push(lang === 'bn'
+        ? 'লোকাল অ্যাকাউন্ট এখনো approve হয়নি — Supabase-এ approve করার ৩০ সেকেন্ডের মধ্যে অটো সক্রিয় হবে।'
+        : 'The local account is still pending — it activates automatically within 30 seconds after the Supabase approval.')
+    }
+    if (help.local?.status === 'inactive') {
+      helpLines.push(lang === 'bn'
+        ? 'অ্যাকাউন্টটি নিষ্ক্রিয় — সুপার অ্যাডমিন Security → Users থেকে সক্রিয় করবেন।'
+        : 'The account is deactivated — a super admin can re-activate it in Security → Users.')
+    }
+    if (help.local?.status === 'active') {
+      helpLines.push(lang === 'bn'
+        ? 'ইউজারনেম ঠিক আছে, কিন্তু পাসওয়ার্ড মিলছে না — “Forgot password?” চাপুন (সুপার অ্যাডমিন নতুন পাসওয়ার্ড সেট করবেন)।'
+        : 'The username is correct but the password does not match — use "Forgot password?" (a super admin sets a new one).')
+    }
+    if (!help.local && !help.remote && !help.suggestion) {
+      helpLines.push(lang === 'bn'
+        ? 'এই ইউজারনেম কোনো অ্যাকাউন্টে নেই — বানান দেখুন, অথবা “Create Account” দিয়ে সাইনআপ করুন।'
+        : 'No account has this username — check the spelling, or use "Create Account".')
+    }
   }
 
   const doSignup = async () => {
@@ -109,6 +170,11 @@ export default function Login({ onLogin }: { onLogin: (u: UserInfo) => void }) {
             </div>
           </div>
           {error && <p className="text-sm text-red-500 bg-red-50 dark:bg-red-900/30 rounded-lg px-3 py-2">{error}</p>}
+          {helpLines.length > 0 && (
+            <ul className="text-[11px] text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/30 rounded-lg px-3 py-2 space-y-1 list-disc pl-6">
+              {helpLines.map((l, i) => <li key={i}>{l}</li>)}
+            </ul>
+          )}
           <button type="submit" className="btn-primary w-full py-2.5" disabled={busy}>{busy ? t('loading') : t('signIn')}</button>
 
           <div className="flex items-center justify-between text-xs">

@@ -2,6 +2,7 @@ import { ipcMain } from 'electron'
 import { ListParams } from '../../shared/types'
 import { getDb, getSetting, logActivity, nextSeq, round2, currentMonth } from '../db'
 import { requirePermission } from './auth'
+import { resolveSessionCollector, collectorCustomerWhere } from './payments'
 
 function customerDueBefore(db: any, customerId: number, month: string): number {
   const row = db.prepare(`SELECT COALESCE(SUM(total - paid), 0) AS d FROM bills
@@ -50,8 +51,13 @@ export function registerBillingIpc(): void {
   })
 
   ipcMain.handle('billing:list', (e, params: ListParams & { month?: string; status?: string; areaId?: number }) => {
-    requirePermission(e, 'billing', 'view')
+    const s = requirePermission(e, 'billing', 'view')
     const db = getDb()
+    const me = resolveSessionCollector(db, s)
+    if (me.locked) {
+      if (me.error) throw new Error(me.error)
+      if (me.id == null) throw new Error('NO_COLLECTOR_PROFILE')
+    }
     const page = Math.max(1, params.page || 1)
     const pageSize = params.all ? 100000 : Math.min(200, Math.max(5, params.pageSize || 20))
     const where: string[] = []
@@ -59,6 +65,7 @@ export function registerBillingIpc(): void {
     if (params.month) { where.push('b.month = ?'); args.push(params.month) }
     if (params.status) { where.push('b.status = ?'); args.push(params.status) }
     if (params.areaId) { where.push('c.area_id = ?'); args.push(params.areaId) }
+    if (me.locked && me.id != null) where.push(collectorCustomerWhere(me.id))
     if (params.search) {
       where.push('(c.name LIKE ? OR c.code LIKE ? OR c.mobile LIKE ? OR b.invoice_no LIKE ?)')
       const like = `%${params.search}%`

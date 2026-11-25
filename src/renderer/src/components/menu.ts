@@ -4,8 +4,8 @@
 // `perm` = the module permission the page requires (matches requirePermission
 // module names / generic entity keys). Items without perm are always visible;
 // the Layout hides items the logged-in user has no permission for.
-export interface MenuItem { labelKey: string; path: string; icon?: string; badge?: 'pending'; perm?: string }
-export interface MenuGroup { labelKey: string; icon: string; path?: string; children?: MenuItem[]; perm?: string }
+export interface MenuItem { labelKey: string; path: string; icon?: string; badge?: 'pending'; perm?: string; superOnly?: boolean }
+export interface MenuGroup { labelKey: string; icon: string; path?: string; children?: MenuItem[]; perm?: string; superOnly?: boolean }
 
 export const MENU: MenuGroup[] = [
   { labelKey: 'm_dashboard', icon: 'Home', path: '/dashboard', perm: 'dashboard' },
@@ -15,7 +15,7 @@ export const MENU: MenuGroup[] = [
     labelKey: 'm_customers_group', icon: 'Users',
     children: [
       { labelKey: 'm_customers', path: '/customers', icon: 'Users', perm: 'customers' },
-      { labelKey: 'm_customers_other', path: '/customers?status=inactive', icon: 'Users', perm: 'customers' }
+      { labelKey: 'm_customers_other', path: '/customers?status=disconnected', icon: 'Users', perm: 'customers' }
     ]
   },
   {
@@ -51,6 +51,13 @@ export const MENU: MenuGroup[] = [
     ]
   },
   {
+    labelKey: 'm_sms_group', icon: 'Wallet',
+    children: [
+      { labelKey: 'm_sms_wallet', path: '/sms', icon: 'MessageSquare' },
+      { labelKey: 'm_sms_admin', path: '/sms/admin', icon: 'Settings', perm: 'security', superOnly: true }
+    ]
+  },
+  {
     labelKey: 'm_accounts_group', icon: 'Wallet',
     children: [
       { labelKey: 'm_expense', path: '/accounts/expense', icon: 'Banknote', perm: 'accounts' },
@@ -68,5 +75,6 @@ export const MENU: MenuGroup[] = [
   { labelKey: 'm_activity_log', icon: 'Clock', path: '/security/logs', perm: 'security' },
   { labelKey: 'security_roles', icon: 'ShieldCheck', path: '/security/roles', perm: 'security' },
   { labelKey: 'm_user_manage', icon: 'UserCog', path: '/security/users', perm: 'users' },
+  { labelKey: 'm_supabase_users', icon: 'UserCheck', path: '/security/user-accounts', perm: 'security', superOnly: true },
   { labelKey: 'm_settings', icon: 'Settings', path: '/settings' }
 ]

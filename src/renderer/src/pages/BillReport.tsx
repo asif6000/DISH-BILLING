@@ -290,6 +290,8 @@ export function buildBillHtml(info: any, copy: Copy, selectedPaymentId?: number 
   const dateStr = genDate.toISOString().slice(0, 10)
   const timeStr = genDate.toTimeString().slice(0, 8)
   const esc = (v: any) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  // Customer ID prints without the AVA- prefix (the full code stays on "Connection No")
+  const cid = esc(String(c.code || '').replace(/^AVA-/, ''))
   // selected receipt only ("যেটা select করা হবে সেটাই দেখাবে") — otherwise all payments
   const pays = selectedPaymentId ? info.payments.filter((p: any) => p.id === selectedPaymentId) : info.payments
   const payRows = pays.map((p: any, i: number) =>
@@ -306,7 +308,7 @@ export function buildBillHtml(info: any, copy: Copy, selectedPaymentId?: number 
       <td>
         <div class="sect">CUSTOMER INFORMATION</div>
         <table class="kv">
-          <tr><td>Customer ID</td><td><b>${esc(c.code)}</b></td></tr>
+          <tr><td>Customer ID</td><td><b>${cid}</b></td></tr>
           <tr><td>Customer Name</td><td><b>${esc(c.name)}</b></td></tr>
           <tr><td>Address</td><td>${esc(c.address || '—')}</td></tr>
           <tr><td>Mobile Number</td><td>${esc(c.mobile)}</td></tr>
@@ -410,7 +412,7 @@ export function buildBillHtml(info: any, copy: Copy, selectedPaymentId?: number 
         <td>
           <div class="sect sect-sm">CUSTOMER INFORMATION</div>
           <table class="kv kv-sm">
-            <tr><td>Customer ID</td><td><b>${esc(c.code)}</b></td></tr>
+            <tr><td>Customer ID</td><td><b>${cid}</b></td></tr>
             <tr><td>Customer Name</td><td><b>${esc(c.name)}</b></td></tr>
             <tr><td>Customer Serial</td><td>${esc(c.customer_serial ?? '—')}</td></tr>
             <tr><td>Mobile Number</td><td>${esc(c.mobile)}</td></tr>

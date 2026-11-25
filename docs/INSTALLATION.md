@@ -43,7 +43,7 @@ npm install
 ### Verify
 ```bash
 npm run typecheck   # TypeScript, both main + renderer
-npm test            # 45 business-logic tests (billing, payments, inventory, backup)
+npm test            # 300+ business-logic tests (billing, payments, SMS wallet, backup)
 npm run build       # bundles main / preload / renderer into out/
 ```
 
@@ -85,7 +85,7 @@ src/
     components/    Layout, generic DataTable + EntityPage (config-driven CRUD)
     pages/         Dashboard, Customers, Billing, Payments, Reports, ...
   shared/          entity metadata + types used by both sides
-tests/             business-logic test suite (45 tests, runs in plain Node)
+tests/             business-logic test suite (300+ tests, runs in plain Node)
 ```
 
 Key decisions:
@@ -96,7 +96,104 @@ Key decisions:
 - **Money**: `round2()` everywhere; payments allocate to oldest unpaid bills first; surplus becomes advance balance.
 - **Security**: bcryptjs password hashing, role-based permissions enforced in IPC handlers, session timeout, activity + login logs.
 
-## 4. Version Upgrades
+## 4. SMS Gateway Configuration (server side only)
+
+The SMS gateway is called **only from the Electron main process**. The renderer
+never receives the provider API key; the Super Admin UI only shows boolean
+“configured / missing” status.
+
+There are two supported server-side modes. **Supabase Edge Function mode is
+recommended** because the provider API key and Sender ID are stored in Supabase
+Edge Function Secrets instead of the desktop environment:
+
+### Mode A — Supabase Edge Function (recommended)
+
+1. Deploy `supabase/functions/bulksmsbd` (see `supabase/functions/README.md`)
+   and set `BULKSMSBD_API_KEY`, `BULKSMSBD_SENDER_ID`, `SMS_GATEWAY_TOKEN`,
+   `BULKSMSBD_GATEWAY_URL` and `BULKSMSBD_BALANCE_URL` as Supabase secrets.
+2. On the desktop set only:
+
+```bat
+setx SMS_PROVIDER "bulksmsbd"
+setx SMS_EDGE_URL "https://<project-ref>.supabase.co/functions/v1/bulksmsbd"
+setx SMS_EDGE_TOKEN "<the same long random token>"
+```
+
+When `SMS_EDGE_URL` exists, **send, provider-balance and DLR** requests are
+routed through the Edge Function. The provider API key never reaches the
+installer, renderer, SQLite database or logs. The local per-user SMS wallets and
+all atomic accounting remain in the Electron main process.
+
+### Mode B — local main-process credentials
+
+Set these **Windows environment variables** before launching the app (then sign
+out/in or restart Windows so the new environment is inherited):
+
+| Variable | Required | Example | Purpose |
+|---|---|---|---|
+| `SMS_PROVIDER` | yes | `bulksmsbd` | `generic`, `bulksmsbd`, `smsnetbd`, `sslwireless` |
+| `SMS_GATEWAY_URL` | yes | `https://bulksmsbd.net/api/smsapi` | BulkSMSBD send endpoint |
+| `SMS_BALANCE_URL` | optional | `https://bulksmsbd.net/api/getBalanceApi` | Gateway balance check (defaults for BulkSMSBD) |
+| `SMS_DLR_URL` | optional | `https://bulksmsbd.net/api/deliveryReportApi` | Delivery report endpoint (defaults for BulkSMSBD) |
+| `SMS_LOW_BALANCE_THRESHOLD` | optional | `20` | In-app low SMS balance warning threshold |
+| `SMS_SENDER_ID` | yes | `8809612...` | Approved sender / mask |
+| `SMS_API_KEY` | yes | *(secret)* | API key from the provider |
+| `SMS_API_SECRET` | for providers that need it | *(secret)* | API secret / password |
+| `SMS_ENABLED` | optional | `1` | Force-enable the gateway (overrides the Super Admin toggle) |
+| `SMS_REFUND_ON_FAILED` | optional | `1` | Refund wallet SMS if the provider rejects/fails a send |
+| `SMS_TIMEOUT_MS` | optional | `15000` | Gateway HTTP timeout |
+| `SMS_EDGE_URL` | Edge mode | `https://<ref>.supabase.co/functions/v1/bulksmsbd` | Secure Supabase proxy; when set, local key/sender are not used |
+| `SMS_EDGE_TOKEN` | Edge mode | *(secret)* | Token shared with the Edge Function secret `SMS_GATEWAY_TOKEN` |
+
+Example (Command Prompt, current user):
+
+```bat
+setx SMS_PROVIDER "bulksmsbd"
+setx SMS_GATEWAY_URL "https://bulksmsbd.net/api/smsapi"
+setx SMS_BALANCE_URL "https://bulksmsbd.net/api/getBalanceApi"
+setx SMS_DLR_URL "https://bulksmsbd.net/api/deliveryReportApi"
+setx SMS_SENDER_ID "8809612xxxxxx"
+setx SMS_API_KEY "your-key"
+setx SMS_API_SECRET "your-secret"
+setx SMS_LOW_BALANCE_THRESHOLD "20"
+```
+
+Notes:
+- `SMS_GATEWAY_URL` / `SMS_SENDER_ID` / `SMS_PROVIDER` may also be saved by the
+  Super Admin in **SMS Admin → Gateway** when no environment override exists.
+  Environment values always win.
+- API key/secret and the Edge token are **never** written to the database, logs,
+  SMS history or UI. Provider error text is redacted before it is stored.
+- After configuring either mode, open **SMS Admin → Gateway** and click **Test**
+  to send one real test SMS (this does not debit any user wallet).
+- Each account has its own SMS wallet (`sms_wallets`), separate from
+  `accounts.balance` and the BDT `transactions` ledger. Only the Super Admin can
+  verify package payments, allocate wallet credits, or view other users'
+  wallets. Every wallet change is an immutable `sms_transactions` row.
+- **BulkSMSBD specifics:** ASCII messages use `type=text`; Bangla/Unicode
+  messages use `type=unicode`. A provider response code **202 means SUBMITTED,
+  not delivered** — it is stored as `sent` until a delivery report or manual
+  override proves delivery. Error codes are mapped to readable messages
+  (e.g. `1007 Provider balance is insufficient`). Before each send the main
+  process checks the user's wallet, calculates the billable parts, and checks the
+  shared provider balance; an insufficient provider balance blocks the send
+  before any wallet debit. Personalized bulk sends use the official
+  `smsapimany` endpoint: one batch request, one message row per recipient and
+  one atomic debit for the total billable parts (maximum 100 recipients).
+- **Provider credits vs user wallets:** BulkSMSBD's balance is the shared gateway
+  balance. **SMS Admin → Provider Credits** records real provider purchases for
+  bookkeeping. **SMS Admin → User Wallets → Adjust** allocates internal wallet
+  SMS to an individual user. These are two separate ledgers by design.
+- **Supabase architecture note:** this desktop app authenticates locally and
+  keeps business data in a per-installation SQLite database; Supabase stores the
+  account directory / subscription rows and (optionally) runs the Edge Function
+  proxy. User SMS wallets are therefore local and keyed 1:1 to the local account
+  provisioned from the unique Supabase `app_users.username`. They are never
+  mixed with `accounts.balance` or the BDT `transactions` ledger.
+
+---
+
+## 5. Version Upgrades
 1. Bump `version` in `package.json`.
 2. Add a new SQL migration string to `src/main/db/migrations.ts` (it will auto-apply on next start).
 3. `npm run dist` — build the new Setup EXE. User data is preserved.

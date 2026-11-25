@@ -184,3 +184,77 @@ as $$
 $$;
 revoke all on function get_app_users() from public;
 grant execute on function get_app_users() to anon;
+
+-- ============================================================
+-- v1.0.81 — ACCOUNT SWITCHING / IMPERSONATION SECURITY
+--
+-- IMPORTANT: customer, bill, payment, report and company-setting data is NOT
+-- stored in Supabase. This desktop app keeps it in a per-account LOCAL SQLite
+-- workspace, so its isolation is enforced by the Electron main process with a
+-- physically separate database file per impersonated account (no SQL query can
+-- ever see another account's rows). Supabase only stores the account directory
+-- and subscription rows below. The policies here make that boundary explicit:
+-- the anonymous key may INSERT a signup/reset request, and may read the account
+-- status ONLY through the SECURITY DEFINER functions above. It may never read,
+-- update or delete accounts directly.
+-- ============================================================
+drop policy if exists "anon cannot read app_users" on app_users;
+create policy "anon cannot read app_users"
+  on app_users for select to anon using (false);
+
+drop policy if exists "anon cannot update app_users" on app_users;
+create policy "anon cannot update app_users"
+  on app_users for update to anon using (false) with check (false);
+
+drop policy if exists "anon cannot delete app_users" on app_users;
+create policy "anon cannot delete app_users"
+  on app_users for delete to anon using (false);
+
+drop policy if exists "anon cannot read password_resets" on password_resets;
+create policy "anon cannot read password_resets"
+  on password_resets for select to anon using (false);
+
+drop policy if exists "anon cannot update password_resets" on password_resets;
+create policy "anon cannot update password_resets"
+  on password_resets for update to anon using (false) with check (false);
+
+drop policy if exists "anon cannot delete password_resets" on password_resets;
+create policy "anon cannot delete password_resets"
+  on password_resets for delete to anon using (false);
+
+-- sanity check (run manually): these must all return false
+-- select has_table_privilege('anon', 'app_users', 'select');
+-- select has_table_privilege('anon', 'app_users', 'update');
+-- select has_table_privilege('anon', 'app_users', 'delete');
+
+-- Remove any stale direct table privileges from older versions of this script.
+-- Only INSERT (signup / reset request) is allowed for the anonymous key.
+revoke select, update, delete on app_users from anon;
+revoke select, update, delete on password_resets from anon;
+
+-- ============================================================
+-- SMS WALLET / BULKSMSBD — LOCAL WALLET, OPTIONAL SECURE EDGE PROXY
+--
+-- The desktop app authenticates locally (bcrypt) and Supabase only stores the
+-- account directory / subscription rows above. Business data (customers,
+-- bills, payments, SMS wallets) stays in the local installation SQLite DB so
+-- the app remains offline-first and no anon key can read another user's data.
+--
+-- Therefore:
+--   * do NOT create sms_wallets / sms_messages in Supabase;
+--   * do NOT put BULKSMSBD_API_KEY in the anon key, app_users or any table;
+--   * the recommended deployment is the Edge Function in
+--     supabase/functions/bulksmsbd, with provider credentials stored as Edge
+--     Function Secrets (BULKSMSBD_API_KEY, BULKSMSBD_SENDER_ID) and a private
+--     SMS_GATEWAY_TOKEN. The Electron main process calls it server-to-server
+--     with SMS_EDGE_URL / SMS_EDGE_TOKEN and still owns every wallet debit.
+--   * alternatively set SMS_API_KEY / SMS_SENDER_ID in the local server
+--     environment; the main process reads them and the renderer never does.
+--
+-- The local SMS wallet is keyed to the local account provisioned 1:1 from the
+-- unique Supabase app_users.username. Package payment verification is Super-
+-- Admin only, idempotent, and separate from the BDT accounts/transactions
+-- ledger. When the Edge Function is used, its SMS_GATEWAY_TOKEN is the only
+-- credential required in the desktop environment; RLS protects the account and
+-- subscription tables, and no SMS table exists in Supabase to over-expose.
+-- ============================================================

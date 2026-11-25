@@ -7,7 +7,10 @@
 //   (scripts/gen-sub-code.js). A valid code extends the subscription by 1 year.
 import { ipcMain } from 'electron'
 import { createHash, randomUUID } from 'crypto'
-import { getSetting, setSetting, logActivity, getDb } from './db'
+// Subscription / trial state is INSTALLATION-level: it always reads and writes
+// the primary database (never an account workspace), so switching accounts can
+// neither reset nor bypass the subscription.
+import { getSetting, setSetting, logActivity, getPrimaryDb as getDb } from './db'
 import { getSession } from './ipc/auth'
 
 // ---- Supabase (baked-in defaults; settings keys supabase_url / supabase_anon_key can override) ----

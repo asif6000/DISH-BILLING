@@ -1,5 +1,5 @@
 import { ipcMain, app } from 'electron'
-import { getSetting, setSetting, logActivity, getDb } from '../db'
+import { getSetting, setSetting, logActivity, getDb, getPrimaryDb, isInstallSetting } from '../db'
 import { requireAuth, requirePermission } from './auth'
 import { hasPermission } from '../../shared/permissions'
 
@@ -51,7 +51,16 @@ export function registerSettingsIpc(): void {
     requireAuth(e)
     const rows = getDb().prepare('SELECT key, value FROM settings').all() as any[]
     const out: Record<string, string> = {}
-    for (const r of rows) out[r.key] = r.value ?? ''
+    for (const r of rows) {
+      if (r.key === 'workspace_owner_id') continue // internal isolation marker
+      out[r.key] = r.value ?? ''
+    }
+    // installation-level keys (subscription, Supabase config, security policy,
+    // updater) always come from the primary database, whatever workspace is open
+    const installRows = getPrimaryDb().prepare(`SELECT key, value FROM settings
+      WHERE key IN ('sub_expire','supabase_url','supabase_anon_key','sub_app_id','backup_dir','permission_mode','session_timeout_min','supabase_auto_provision','auto_update_check','update_url','auto_backup')
+         OR key LIKE 'updater_%'`).all() as any[]
+    for (const r of installRows) out[r.key] = r.value ?? ''
     return out
   })
 
@@ -77,9 +86,18 @@ export function registerSettingsIpc(): void {
     return canEditCompany(s)
   }
 
+  // Installation-level keys (subscription, Supabase config, security policy,
+  // updater) may never be changed from inside an impersonated session.
+  const guardInstallKeys = (s: any, keys: string[]) => {
+    if (s?.impersonatedBy && keys.some((k) => isInstallSetting(k))) {
+      throw new Error('IMPERSONATION_BLOCKED:install_settings')
+    }
+  }
+
   ipcMain.handle('settings:set', (e, key: string, value: string) => {
     const s = requirePermission(e, 'settings')
     if (!canSaveKeys(s, [key])) throw new Error('PERMISSION_DENIED:settings')
+    guardInstallKeys(s, [key])
     setSetting(key, String(value))
     logActivity(s.userId, s.username, 'set_setting', 'settings', `${key}=${value}`)
     return true
@@ -94,6 +112,7 @@ export function registerSettingsIpc(): void {
     // Company-only payloads now require just the company_profile permission.
     const s = companyOnly ? requireAuth(e) : requirePermission(e, 'settings')
     if (!canSaveKeys(s, keys)) throw new Error('PERMISSION_DENIED:settings')
+    guardInstallKeys(s, keys)
     for (const k of keys) {
       const err = validateCompanyField(k, obj[k])
       if (err) throw new Error(err)

@@ -53,7 +53,7 @@ Do these once, in order:
 ### 3.1 Adding a Customer (New Connection)
 *Customer Management → All Customers → Add*
 
-1. Fill **Customer Information** (name, father's name, mobile `01XXXXXXXXX`, address, area).
+1. Fill **Customer Information** (name, father's name, mobile `01XXXXXXXXX`, address, area, and **Previous Due Bill** if the customer has an old/opening balance).
 2. Fill **Connection Information** — package, connection date, monthly bill, connection fee.
 3. A unique **Customer ID** (`AVA-00001` format) is generated automatically.
 4. To receive the connection fee, go to *Payment Management → Collect Payment*, select the customer, choose type **Connection Fee**.
@@ -103,7 +103,7 @@ Every payment is **transaction-safe** — it either completes fully or not at al
 
 | Module | What you do there |
 |--------|-------------------|
-| **Dashboard** | 14 KPI cards, daily collection chart, monthly revenue chart, customer growth chart, area-wise stats, recent payments/customers, pending complaints. Month filter on top. |
+| **Dashboard** | 16 KPI cards (including **Previous Due Bill** total), daily collection chart, monthly revenue chart, customer growth chart, area-wise stats, recent payments/customers, pending complaints. Month filter on top. |
 | **Area Management** | Zones → Areas → Sub Areas → Roads; area-wise customer list & collection report. |
 | **Network Management** | Register Main Lines, Distribution Boxes, Fiber Nodes, Splitters, Amplifiers, Cable Routes, Connection Points (with parent device links); log network faults with resolution dates. |
 | **Customer Management** | All customers with status filters (Active/Inactive/Paid/Due/Expired/Free), profile with bills/payments/history/documents, **Transfer** (change area), **Shifting** (change address), **Bulk Import/Export** (CSV). |
@@ -210,3 +210,77 @@ After the developer clicks **Approve**, the customer's app checks Supabase (on s
 3. Enter the code on the payment page (or in *Settings → Subscription*) and click **Activate**.
 4. The subscription extends by **1 full year** from the current expiry (renewing early never loses days).
 
+
+---
+
+## 11. SMS Wallet
+
+Every user has a **personal SMS wallet**, completely separate from the company's
+main financial balance. The wallet appears on the Dashboard and in **SMS Wallet**
+in the left menu.
+
+### Sending an SMS
+1. Open **SMS Wallet → Send SMS**.
+2. Enter the recipient (`01XXXXXXXXX`) and the message. The screen shows the
+   estimated billable segments (long/Unicode messages use more than one SMS).
+3. Click **Send SMS**. The server checks your balance first, then deducts the
+   exact segment count and calls the gateway.
+4. Every send is stored in **History** with Pending / Sent / Delivered / Failed
+   status. A gateway failure is refunded automatically when the refund policy is
+   enabled. Each message also stores its request ID and redacted gateway
+   response.
+5. Bangla messages are sent as Unicode; ASCII messages use normal text encoding.
+
+### Bulk SMS
+1. Open **SMS Wallet → Bulk SMS**.
+2. Paste up to 100 recipient numbers (one per line) and the shared message.
+3. The screen shows the per-recipient parts and the exact total. The whole
+   batch is debited once and sent through BulkSMSBD's personalized bulk
+   endpoint (`smsapimany`).
+4. A provider 202 stores every recipient as **Submitted**; a rejected batch is
+   refunded under the configured policy. Re-sending the same batch is
+   idempotent and never charges twice.
+
+If the wallet reaches the configured warning threshold (default 20 SMS), a
+low-balance banner appears on **My SMS Wallet** and the Dashboard, and the send
+result also warns you. Duplicate clicks or retried requests are idempotent — the
+same request is never charged twice.
+
+### Buying an SMS package
+1. Pay the Super Admin's published bKash / Nagad / bank number.
+2. Open **SMS Wallet → Buy SMS**, choose a package, payment method and enter the
+   **real transaction ID**.
+3. Submit the request. **No SMS is credited yet** — the request is Pending.
+4. The Super Admin verifies the payment in **SMS Admin → Purchases** and clicks
+   **Approve & credit**. Exactly the package SMS count is credited once.
+
+### Super Admin
+**SMS Admin** (visible only to the Super Admin) provides:
+- **User Wallets** — every user's balance and totals, with audited manual
+  allocation/adjustment (balance can never go negative).
+- **Purchases** — verify or reject user payment requests. Approval credits the
+  user's wallet exactly once.
+- **Packages** — create/edit/deactivate the real SMS packages users can buy.
+- **Provider Credits** — record SMS/credit bought from BulkSMSBD for the shared
+  gateway account. This is bookkeeping only; it never credits a user wallet.
+  Allocate wallet SMS separately from **User Wallets → Adjust**.
+- **Transactions** — the full purchase / usage / refund / adjustment ledger for
+  every user.
+- **SMS Log** — every message, request ID, gateway response and status. Status
+  **Submitted** means the provider returned 202; it is not yet proof of
+  delivery. Click **DLR** to pull one provider delivery report, or **Sync
+  delivery** to refresh recent submitted messages. A failed report applies the
+  refund policy once; final statuses cannot be downgraded back into a free
+  delivered SMS. Bulk sends show one submitted row per recipient and a shared
+  batch ID.
+- **Gateway** — provider, sender ID, send/balance/delivery-report URLs,
+  enable/disable, refund policy, low-balance threshold, a real test send, and a
+  **Check balance** button for the shared BulkSMSBD account balance. Provider
+  credentials live in Supabase Edge Function Secrets (recommended) or the
+  server environment; they are never shown in this screen.
+
+### Payment verification
+Package requests are **Pending** until the Super Admin verifies the real
+bKash/Nagad/Bank TrxID in **SMS Admin → Purchases**. Approval credits exactly
+once; duplicate callbacks/clicks cannot double-credit. There is no fake or
+automatic credit.

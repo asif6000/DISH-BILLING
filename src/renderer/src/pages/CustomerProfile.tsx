@@ -63,6 +63,7 @@ export default function CustomerProfile() {
             } />
             <Info label={t('connectionDate')} value={dateFmt(c.connection_date)} />
             <Info label={t('monthlyBill')} value={'৳ ' + money(c.monthly_bill)} />
+            <Info label={t('previousDueBill')} value={'৳ ' + money(c.previous_due_bill)} />
             <Info label={t('connectionFee')} value={'৳ ' + money(c.connection_fee)} />
             <Info label={t('note')} value={c.note} />
           </div>
@@ -73,6 +74,10 @@ export default function CustomerProfile() {
             <div className="flex items-center justify-between py-1.5 border-b border-slate-100 dark:border-slate-800">
               <span className="text-sm text-slate-500">{t('totalDue')}</span>
               <span className={`font-bold ${Number(c.total_due) > 0 ? 'text-red-600' : 'text-emerald-600'}`}>৳ {money(c.total_due)}</span>
+            </div>
+            <div className="flex items-center justify-between py-1.5 border-b border-slate-100 dark:border-slate-800">
+              <span className="text-sm text-slate-500">{t('previousDueBill')}</span>
+              <span className={`font-bold ${Number(c.previous_due_bill) > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-500'}`}>৳ {money(c.previous_due_bill)}</span>
             </div>
             <div className="flex items-center justify-between py-1.5 border-b border-slate-100 dark:border-slate-800">
               <span className="text-sm text-slate-500">{t('advanceBalance')}</span>

@@ -2,6 +2,7 @@ import { ipcMain } from 'electron'
 import { getDb, round2 } from '../db'
 import { requirePermission } from './auth'
 import { getSetting } from '../db'
+import { resolveSessionCollector, collectorCustomerWhere, isCustomerAssignedTo } from './payments'
 
 export function registerReportIpc(): void {
   // Area-wise collection
@@ -48,12 +49,19 @@ export function registerReportIpc(): void {
 
   // Due list (per customer with dues)
   ipcMain.handle('reports:dueList', (e, month: string) => {
-    requirePermission(e, 'reports')
-    return getDb().prepare(`SELECT c.id, c.code, c.name, c.mobile, a.name AS area, c.advance_balance,
+    const s = requirePermission(e, 'reports')
+    const db = getDb()
+    const me = resolveSessionCollector(db, s)
+    if (me.locked) {
+      if (me.error) throw new Error(me.error)
+      if (me.id == null) throw new Error('NO_COLLECTOR_PROFILE')
+    }
+    const scope = me.locked && me.id != null ? ` AND ${collectorCustomerWhere(me.id)}` : ''
+    return db.prepare(`SELECT c.id, c.code, c.name, c.mobile, a.name AS area, c.advance_balance,
         COALESCE((SELECT SUM(b.total - b.paid) FROM bills b WHERE b.customer_id = c.id AND b.status != 'cancelled'),0) AS total_due,
         COALESCE((SELECT SUM(b.total - b.paid) FROM bills b WHERE b.customer_id = c.id AND b.month = ? AND b.status != 'cancelled'),0) AS month_due
       FROM customers c LEFT JOIN areas a ON a.id = c.area_id
-      WHERE c.status = 'active' AND (SELECT SUM(b.total - b.paid) FROM bills b WHERE b.customer_id = c.id AND b.status != 'cancelled') > 0
+      WHERE c.status = 'active' AND (SELECT SUM(b.total - b.paid) FROM bills b WHERE b.customer_id = c.id AND b.status != 'cancelled') > 0${scope}
       ORDER BY total_due DESC`).all(month)
   })
 
@@ -62,14 +70,18 @@ export function registerReportIpc(): void {
     requirePermission(e, 'reports')
     const db = getDb()
     const collections = db.prepare(`SELECT COALESCE(SUM(CASE WHEN type != 'refund' THEN amount END),0) AS a FROM payments WHERE payment_date BETWEEN ? AND ?`).get(from, to) as { a: number }
-    const otherIncome = db.prepare(`SELECT COALESCE(SUM(amount),0) AS a FROM transactions WHERE type = 'income' AND date BETWEEN ? AND ?`).get(from, to) as { a: number }
+    const otherIncome = db.prepare(`SELECT COALESCE(SUM(t.amount),0) AS a FROM transactions t
+      WHERE t.type = 'income' AND t.date BETWEEN ? AND ?
+        AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.receipt_no = t.ref)`).get(from, to) as { a: number }
     const expenseRows = db.prepare(`SELECT ec.name AS category, COALESCE(SUM(t.amount),0) AS amount FROM transactions t
       LEFT JOIN expense_categories ec ON ec.id = t.category_id
       WHERE t.type = 'expense' AND t.date BETWEEN ? AND ? GROUP BY t.category_id ORDER BY amount DESC`).all(from, to)
     const totalExpenses = (db.prepare(`SELECT COALESCE(SUM(amount),0) AS a FROM transactions WHERE type = 'expense' AND date BETWEEN ? AND ?`).get(from, to) as { a: number }).a
     const incomeCats = db.prepare(`SELECT ec.name AS category, COALESCE(SUM(t.amount),0) AS amount FROM transactions t
       LEFT JOIN expense_categories ec ON ec.id = t.category_id
-      WHERE t.type = 'income' AND t.date BETWEEN ? AND ? GROUP BY t.category_id ORDER BY amount DESC`).all(from, to)
+      WHERE t.type = 'income' AND t.date BETWEEN ? AND ?
+        AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.receipt_no = t.ref)
+      GROUP BY t.category_id ORDER BY amount DESC`).all(from, to)
     return {
       collections: round2(collections.a),
       otherIncome: round2(otherIncome.a),
@@ -119,8 +131,14 @@ export function registerReportIpc(): void {
   // ---------- Two-copy A4 bill report ----------
   // Per-customer billing figures for one month (READ-ONLY, used for reports & printing)
   ipcMain.handle('reports:billList', (e, month: string, filters: any = {}) => {
-    requirePermission(e, 'reports')
+    const s = requirePermission(e, 'reports')
     const db = getDb()
+    const me = resolveSessionCollector(db, s)
+    if (me.locked) {
+      if (me.error) throw new Error(me.error)
+      if (me.id == null) throw new Error('NO_COLLECTOR_PROFILE')
+    }
+    const scopeClause = me.locked && me.id != null ? ` AND ${collectorCustomerWhere(me.id)}` : ''
     // month range: filters.from..filters.to (YYYY-MM) — defaults to the single `month`
     // (same billing calculation logic as the Billing Report, generalized to a range)
     const from = String(filters.from || month || '')
@@ -136,7 +154,7 @@ export function registerReportIpc(): void {
         COALESCE((SELECT SUM(b.total - b.paid) FROM bills b WHERE b.customer_id = c.id AND b.month < ? AND b.status != 'cancelled'),0) AS prev_due,
         COALESCE((SELECT SUM(b.paid) FROM bills b WHERE b.customer_id = c.id AND b.month >= ? AND b.month <= ? AND b.status != 'cancelled'),0) AS paid
       FROM customers c LEFT JOIN areas a ON a.id = c.area_id
-      WHERE c.status = 'active' ${filters.areaId ? 'AND c.area_id = ' + Number(filters.areaId) : ''}${collectorClause}
+      WHERE c.status = 'active' ${filters.areaId ? 'AND c.area_id = ' + Number(filters.areaId) : ''}${collectorClause}${scopeClause}
       ORDER BY c.code`).all(from, to, from, to, from, to, from, from, to) as any[]
     let list = rows.map((r) => {
       const totalPayable = round2(r.prev_due + r.month_bill + r.additional - r.discount)
@@ -153,8 +171,14 @@ export function registerReportIpc(): void {
 
   // Full bill data for one customer + month (READ-ONLY, for printing both copies)
   ipcMain.handle('reports:customerBill', (e, customerId: number, month: string) => {
-    requirePermission(e, 'reports')
+    const s = requirePermission(e, 'reports')
     const db = getDb()
+    const me = resolveSessionCollector(db, s)
+    if (me.locked) {
+      if (me.error) throw new Error(me.error)
+      if (me.id == null) throw new Error('NO_COLLECTOR_PROFILE')
+      if (!isCustomerAssignedTo(db, me.id, customerId)) throw new Error('CUSTOMER_NOT_ASSIGNED_TO_COLLECTOR')
+    }
     const customer = db.prepare(`SELECT c.*, a.name AS area_name, p.name AS package_name FROM customers c
       LEFT JOIN areas a ON a.id = c.area_id LEFT JOIN packages p ON p.id = c.package_id WHERE c.id = ?`).get(customerId) as any
     if (!customer) throw new Error('NOT_FOUND')

@@ -164,10 +164,16 @@ export function registerGenericIpc(): void {
 
   // ref lists for dropdowns (full active lists)
   ipcMain.handle('db:reflist', (e, key: string) => {
-    const def = ENTITIES[key]
-    if (!def || !VALID_TYPE_RE.test(def.table)) throw new Error('UNKNOWN_ENTITY')
     requirePermission(e, key)
     const db = getDb()
+    // customers is a bespoke module (no ENTITIES entry), so resolve it directly
+    // here — otherwise the complaint/discount/document forms get an empty
+    // customer dropdown (UNKNOWN_ENTITY was thrown and silently swallowed)
+    if (key === 'customers') {
+      return db.prepare(`SELECT id, code || ' - ' || name AS label FROM customers WHERE status != 'deleted' ORDER BY code`).all()
+    }
+    const def = ENTITIES[key]
+    if (!def || !VALID_TYPE_RE.test(def.table)) throw new Error('UNKNOWN_ENTITY')
     let sql: string
     if (def.table === 'customers') {
       sql = `SELECT id, code || ' - ' || name AS label FROM customers WHERE status != 'deleted' ORDER BY code`
@@ -197,7 +203,7 @@ export function registerGenericIpc(): void {
 
   // Quick-add a collector from the payment form (creates staff + collector in one step)
   ipcMain.handle('collectors:quickAdd', (e, name: string, mobile?: string) => {
-    const s = requirePermission(e, 'collectors')
+    const s = requirePermission(e, 'collectors', 'create')
     const db = getDb()
     if (!name || !name.trim()) throw new Error('MISSING_FIELDS')
     let staff = db.prepare('SELECT id FROM staff WHERE LOWER(TRIM(name)) = LOWER(?)').get(name.trim()) as any
@@ -216,7 +222,7 @@ export function registerGenericIpc(): void {
 
   // collector area assignment
   ipcMain.handle('collector:assignAreas', (e, collectorId: number, areaIds: number[]) => {
-    requirePermission(e, 'collectors')
+    requirePermission(e, 'collectors', 'edit')
     const db = getDb()
     db.exec('BEGIN')
     try {
@@ -232,7 +238,7 @@ export function registerGenericIpc(): void {
   })
 
   ipcMain.handle('collector:getAreas', (e, collectorId: number) => {
-    requirePermission(e, 'collectors')
+    requirePermission(e, 'collectors', 'view')
     return getDb().prepare('SELECT area_id FROM collector_areas WHERE collector_id = ?').all(collectorId)
   })
 }

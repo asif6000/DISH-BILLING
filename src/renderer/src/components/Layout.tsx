@@ -11,7 +11,7 @@ function icon(name: string): any {
   return I || Icons.Circle
 }
 
-export default function Layout({ user, onLogout }: { user: UserInfo | null; onLogout: () => void }) {
+export default function Layout({ user, onLogout, onReturnToSuper }: { user: UserInfo | null; onLogout: () => void; onReturnToSuper?: () => void }) {
   const { t, lang, setLang } = useI18n()
   const [collapsed, setCollapsed] = useState(false)
   const [open, setOpen] = useState<Record<string, boolean>>({})
@@ -67,11 +67,15 @@ export default function Layout({ user, onLogout }: { user: UserInfo | null; onLo
   const isSuperUser = perms.includes('all')
   const openMode = (user?.permissionMode as unknown as string) === 'open'
   const canMenu = (perm?: string) => !perm || openMode || isSuperUser || hasModuleAccess(perms, perm)
+  // menu items flagged superOnly (Super Admin → Supabase User Management) are
+  // hidden from every other account, whatever their role permissions say
+  const visible = (it: any) => canMenu(it.perm) && (!it.superOnly || isSuperUser)
   const menu = MENU.filter((g) => {
-    const kids = (g.children || []).filter((it: any) => canMenu(it.perm))
+    if (g.superOnly && !isSuperUser) return false
+    const kids = (g.children || []).filter(visible)
     if (!g.children) return canMenu(g.perm)
     return kids.length > 0
-  }).map((g) => (g.children ? { ...g, children: (g.children || []).filter((it: any) => canMenu(it.perm)) } : g))
+  }).map((g) => (g.children ? { ...g, children: (g.children || []).filter(visible) } : g))
 
   return (
     <div className="flex h-full">
@@ -168,6 +172,20 @@ export default function Layout({ user, onLogout }: { user: UserInfo | null; onLo
           </div>
         </header>
         <main className="flex-1 overflow-y-auto p-5">
+          {/* Super Admin → Login As User banner (impersonation active) */}
+          {user?.impersonatedBy && (
+            <div className="mb-4 no-print rounded-xl border border-amber-400 dark:border-amber-600 bg-amber-100 dark:bg-amber-900/40 px-4 py-2.5 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-amber-900 dark:text-amber-200">
+              <Icons.UserCheck size={17} className="shrink-0" />
+              <span className="font-semibold">
+                {lang === 'bn'
+                  ? `আপনি এখন ${user.fullName || user.username} (${user.roleName || '-'}) হিসেবে আছেন — সুপার অ্যাডমিন ${user.impersonatedByName || ''} এর পক্ষ থেকে।`
+                  : `You are now acting as ${user.fullName || user.username} (${user.roleName || '-'}), impersonated by super admin ${user.impersonatedByName || ''}.`}
+              </span>
+              <button className="btn-primary btn-sm ml-auto" onClick={() => onReturnToSuper?.()}>
+                <Icons.ArrowLeftRight size={14} /> Return to Super Admin
+              </button>
+            </div>
+          )}
           {sub && sub.state !== 'active' && (
             <div className="mb-4 no-print rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 px-4 py-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-amber-800 dark:text-amber-300">
               <Icons.AlertTriangle size={16} className="shrink-0" />

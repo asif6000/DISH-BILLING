@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { Plus, Eye, Wallet, Power, RefreshCw, FileSpreadsheet, Trash2 } from 'lucide-react'
+import { Plus, Eye, Wallet, Power, RefreshCw, FileSpreadsheet, Trash2, UserCheck } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useI18n } from '../lib/i18n'
@@ -8,17 +8,21 @@ import { Modal, ConfirmDialog, StatusBadge, useToast, PageHeader } from '../comp
 import { money, dateFmt, todayStr } from '../lib/format'
 import { errMsg } from '../lib/api'
 import { useReflist } from '../components/ui'
-import { useCan } from '../lib/perms'
+import { useCan, useUser } from '../lib/perms'
+import { usePaymentCollectors } from '../components/CollectorPicker'
 
 export default function CustomersPage({ titleKey, mode }: { titleKey?: string; mode?: 'new' }) {
   const { t, lang } = useI18n()
   const toast = useToast()
   const can = useCan()
+  const user = useUser()
+  const isCollectorAccount = user?.roleName === 'Collector'
   const canCreate = can('customers', 'create')
   const canEdit = can('customers', 'edit')
   const canDelete = can('customers', 'delete')
   const [params] = useSearchParams()
   const statusParam = params.get('status') || 'all'
+  const previousDueParam = params.get('previousDue') === '1'
   const [rows, setRows] = useState<any[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -29,10 +33,17 @@ export default function CustomersPage({ titleKey, mode }: { titleKey?: string; m
   const [toggling, setToggling] = useState<any>(null)
   // delete: single-row (deleting) and multi-select (bulk) with confirm dialogs
   const [selected, setSelected] = useState<number[]>([])
+  const [assignOpen, setAssignOpen] = useState(false)
+  const [assignmentCollector, setAssignmentCollector] = useState('')
+  const [assignmentConfirm, setAssignmentConfirm] = useState(false)
+  const { list: collectorOptions } = usePaymentCollectors()
   const [deleting, setDeleting] = useState<any>(null)
   const [bulkDeleting, setBulkDeleting] = useState(false)
   // Area filter dropdown (between Search and the Excel/PDF/CSV buttons)
   const [areaFilter, setAreaFilter] = useState('')
+  const [collectorFilter, setCollectorFilter] = useState('')
+  const [dueOnly, setDueOnly] = useState(false)
+  const [assigningId, setAssigningId] = useState<number | null>(null)
   const [areas] = [useReflist('areas')]
   const [packages] = [useReflist('packages')]
 
@@ -44,15 +55,38 @@ export default function CustomersPage({ titleKey, mode }: { titleKey?: string; m
 
   const load = useCallback(() => {
     setLoading(true)
-    window.api.customers.list({ page, pageSize: 20, search, status: statusParam === 'all' ? undefined : statusParam, areaId: areaFilter ? Number(areaFilter) : undefined })
+    window.api.customers.list({
+      page, pageSize: 20, search,
+      status: statusParam === 'all' ? undefined : statusParam,
+      areaId: areaFilter ? Number(areaFilter) : undefined,
+      collectorId: collectorFilter ? Number(collectorFilter) : undefined,
+      dueOnly,
+      previousDueOnly: previousDueParam
+    })
       .then((r: any) => { setRows(r.rows); setTotal(r.total); setSelected([]) })
       .catch((e) => toast.push('error', errMsg(e)))
       .finally(() => setLoading(false))
-  }, [page, search, statusParam, areaFilter])
+  }, [page, search, statusParam, areaFilter, collectorFilter, dueOnly, previousDueParam])
 
   useEffect(() => { load() }, [load])
 
-  useEffect(() => { setPage(1) }, [statusParam, search, areaFilter])
+  useEffect(() => { setPage(1) }, [statusParam, search, areaFilter, collectorFilter, dueOnly, previousDueParam])
+
+  // administrators can assign/change/remove the collector inline (collector
+  // accounts can never reassign customers — the backend enforces this too)
+  const canAssignCollector = canEdit && !isCollectorAccount
+  const assignOneCollector = async (row: any, value: string) => {
+    setAssigningId(row.id)
+    try {
+      await window.api.customers.setCollector([row.id], value ? Number(value) : null)
+      toast.push('success', lang === 'bn' ? 'কালেক্টর আপডেট হয়েছে' : 'Collector updated')
+      load()
+    } catch (e) {
+      toast.push('error', errMsg(e))
+    } finally {
+      setAssigningId(null)
+    }
+  }
 
   const statusLabel = (s: string) => {
     if (s === 'due' || s === 'paid' || s === 'expired' || s === 'free' || s === 'all') return s
@@ -78,7 +112,40 @@ export default function CustomersPage({ titleKey, mode }: { titleKey?: string; m
     { key: 'address', label: t('address'), render: (r) => <span className="text-xs">{r.address ? r.address.slice(0, 28) : '-'}</span> },
     { key: '_area', label: t('area') },
     { key: '_package', label: t('package') },
+    { key: '_collector_name', label: lang === 'bn' ? 'নির্ধারিত কালেক্টর' : 'Assigned Collector', render: (r) => {
+      // inline assignment: assign / change / remove the collector straight from the
+      // list row. Collector accounts are locked and only see a badge.
+      if (!canAssignCollector) {
+        return r._collector_name
+          ? <span className="text-xs font-medium text-brand-600">{r._collector_name}</span>
+          : <span className="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400">{lang === 'bn' ? 'অ্যাসাইন করা হয়নি' : 'Unassigned'}</span>
+      }
+      const known = collectorOptions.some((c: any) => Number(c.id) === Number(r.collector_id))
+      return (
+        <select
+          className="input !py-1 !text-xs !w-44"
+          value={r.collector_id ?? ''}
+          disabled={assigningId === r.id}
+          title={lang === 'bn' ? 'কালেক্টর অ্যাসাইন করুন' : 'Assign collector'}
+          onChange={(e) => assignOneCollector(r, e.target.value)}
+        >
+          <option value="">{lang === 'bn' ? 'অ্যাসাইন করা হয়নি' : 'Unassigned'}</option>
+          {r.collector_id && !known && <option value={r.collector_id}>{r._collector_name || `#${r.collector_id}`}</option>}
+          {collectorOptions.map((c: any) => <option key={c.id} value={c.id}>{c.label}</option>)}
+        </select>
+      )
+    } },
+    { key: 'assignment_status', label: lang === 'bn' ? 'অ্যাসাইনমেন্ট স্ট্যাটাস' : 'Assignment', render: (r) => (
+      r.collector_id
+        ? <span className="badge bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">{lang === 'bn' ? 'Assigned' : 'Assigned'}</span>
+        : <span className="badge bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">{lang === 'bn' ? 'Unassigned' : 'Unassigned'}</span>
+    ) },
     { key: 'monthly_bill', label: t('monthlyBill'), align: 'right', render: (r) => money(r.monthly_bill) },
+    { key: 'previous_due_bill', label: t('previousDueBill'), align: 'right', render: (r) => (
+      Number(r.previous_due_bill) > 0
+        ? <span className="font-semibold text-amber-600 dark:text-amber-400">{money(r.previous_due_bill)}</span>
+        : '-'
+    )},
     { key: 'total_due', label: t('due'), align: 'right', render: (r) => (
       <span className={Number(r.total_due) > 0 ? 'text-red-600 dark:text-red-400 font-semibold' : 'text-emerald-600 dark:text-emerald-400'}>{money(r.total_due)}</span>
     )},
@@ -108,6 +175,11 @@ export default function CustomersPage({ titleKey, mode }: { titleKey?: string; m
               </button>
               <button className="btn-secondary" onClick={() => setSelected([])}>{t('cancel')}</button>
             </>
+          )}
+          {canEdit && !isCollectorAccount && selected.length > 0 && (
+            <button className="btn-secondary" onClick={() => setAssignOpen(true)}>
+              <UserCheck size={16} /> {lang === 'bn' ? 'কালেক্টর নির্ধারণ' : 'Assign Collector'} ({selected.length})
+            </button>
           )}
           {canCreate && <button className="btn-secondary" onClick={() => setImportOpen(true)}><FileSpreadsheet size={16} className="text-emerald-600" /> {t('importExcel')}</button>}
           {canCreate && <button className="btn-primary" onClick={() => setFormOpen(true)}><Plus size={16} /> {t('customers_new')}</button>}
@@ -139,11 +211,27 @@ export default function CustomersPage({ titleKey, mode }: { titleKey?: string; m
               <option value="">{lang === 'bn' ? 'সব এরিয়া' : 'All Areas'}</option>
               {areas.map((a: any) => <option key={a.id} value={a.id}>{a.label}</option>)}
             </select>
+            {!isCollectorAccount && (
+              <select className="input !w-44 !py-1.5" value={collectorFilter} onChange={(e) => setCollectorFilter(e.target.value)} title={lang === 'bn' ? 'কালেক্টর' : 'Collector'}>
+                <option value=""> {lang === 'bn' ? 'সব কালেক্টর' : 'All Collectors'}</option>
+                {collectorOptions.map((c: any) => <option key={c.id} value={c.id}>{c.label}</option>)}
+              </select>
+            )}
+            <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 whitespace-nowrap">
+              <input type="checkbox" checked={dueOnly} onChange={(e) => setDueOnly(e.target.checked)} />
+              {lang === 'bn' ? 'শুধু বকেয়া' : 'Due customers'}
+            </label>
             {canDelete && rows.length > 0 && selected.length < total && (
               <button className="btn-secondary !py-1.5 text-xs" title={lang === 'bn' ? `সব ${total} জন নির্বাচন করুন (সব পেজ)` : `Select all ${total} customers (all pages)`}
                 onClick={async () => {
                   try {
-                    const r = await window.api.customers.list({ page: 1, all: true, search, status: statusParam === 'all' ? undefined : statusParam, areaId: areaFilter ? Number(areaFilter) : undefined })
+                    const r = await window.api.customers.list({
+                      page: 1, all: true, search,
+                      status: statusParam === 'all' ? undefined : statusParam,
+                      areaId: areaFilter ? Number(areaFilter) : undefined,
+                      collectorId: collectorFilter ? Number(collectorFilter) : undefined,
+                      dueOnly
+                    })
                     setSelected((r.rows as any[]).map((x) => x.id))
                   } catch (e) { toast.push('error', errMsg(e)) }
                 }}>
@@ -169,6 +257,50 @@ export default function CustomersPage({ titleKey, mode }: { titleKey?: string; m
 
       <CustomerForm open={formOpen} onClose={() => setFormOpen(false)} onSaved={() => { setFormOpen(false); load() }} areas={areas} packages={packages} />
       {importOpen && <ExcelImportModal areas={areas} onClose={() => setImportOpen(false)} onDone={() => { setImportOpen(false); load() }} />}
+
+      <Modal open={assignOpen} onClose={() => setAssignOpen(false)}
+        title={lang === 'bn' ? 'নির্বাচিত গ্রাহককে কালেক্টর দিন' : 'Assign selected customers'}
+        width="max-w-sm">
+        <div className="space-y-3">
+          <p className="text-sm text-slate-500">
+            {selected.length} {lang === 'bn' ? 'জন গ্রাহক নির্বাচন করা হয়েছে' : 'customer(s) selected'}
+          </p>
+          <div>
+            <label className="label">{lang === 'bn' ? 'কালেক্টর' : 'Collector'}</label>
+            <select className="input" value={assignmentCollector} onChange={(e) => setAssignmentCollector(e.target.value)}>
+              <option value="">— {lang === 'bn' ? 'অ্যাসাইনমেন্ট সরান' : 'Remove assignment'} —</option>
+              {collectorOptions.map((c: any) => <option key={c.id} value={c.id}>{c.label}</option>)}
+            </select>
+          </div>
+          <div className="flex justify-end gap-2">
+            <button className="btn-secondary" onClick={() => setAssignOpen(false)}>{t('cancel')}</button>
+            <button className="btn-primary" onClick={() => setAssignmentConfirm(true)}>
+              <UserCheck size={15} /> {lang === 'bn' ? 'Confirm Assignment' : 'Confirm Assignment'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <ConfirmDialog
+        open={assignmentConfirm}
+        onClose={() => setAssignmentConfirm(false)}
+        onConfirm={() => {
+          window.api.customers.setCollector(selected, assignmentCollector ? Number(assignmentCollector) : null)
+            .then(() => {
+              toast.push('success', t('saved'))
+              setAssignmentConfirm(false)
+              setAssignOpen(false)
+              setAssignmentCollector('')
+              setSelected([])
+              load()
+            })
+            .catch((e) => toast.push('error', errMsg(e)))
+        }}
+        title={lang === 'bn' ? 'কালেক্টর অ্যাসাইনমেন্ট নিশ্চিত করুন' : 'Confirm Collector Assignment'}
+        message={assignmentCollector
+          ? `${selected.length} ${lang === 'bn' ? 'জন গ্রাহক নির্বাচিত কালেক্টরে অ্যাসাইন হবে। পূর্বের অ্যাসাইনমেন্ট পরিবর্তন হবে।' : 'selected customer(s) will be reassigned to this collector. Existing assignments will change.'}`
+          : `${selected.length} ${lang === 'bn' ? 'জন গ্রাহকের কালেক্টর অ্যাসাইনমেন্ট সরানো হবে।' : 'selected customer(s) will become unassigned.'}`}
+      />
 
       <ConfirmDialog
         open={!!toggling}
@@ -434,15 +566,20 @@ export function CustomerForm({ open, onClose, onSaved, areas, packages, editing 
   const [f, setF] = useState<any>({})
   const [err, setErr] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
+  const { list: collectorOptions } = usePaymentCollectors()
+  const user = useUser()
+  const isCollectorAccount = user?.roleName === 'Collector'
 
   useEffect(() => {
     if (!open) return
-    setF(editing ? { ...editing } : {
+    setF(editing ? { ...editing, collector_id: editing.collector_id ?? '' } : {
       name: '', father_name: '', mobile: '', address: '', area_id: '', sub_area_id: '', road_id: '',
-      package_id: '', monthly_bill: '', connection_fee: '', connection_date: todayStr(), nid: '', note: '', status: 'active', customer_serial: '',
+      package_id: '', monthly_bill: '', connection_fee: '', previous_due_bill: '', connection_date: todayStr(), nid: '', note: '', status: 'active', customer_serial: '',
       // Paid/Free dropdown — Paid is the default for new connections;
       // existing rows load their saved type (old rows fall back to Paid)
-      connection_type: 'paid'
+      connection_type: 'paid',
+      // optional collector assignment from the New Connection form
+      collector_id: ''
     })
     if (editing) setF((x: any) => ({ ...x, connection_type: editing.connection_type || 'paid' }))
     setErr({})
@@ -461,6 +598,7 @@ export function CustomerForm({ open, onClose, onSaved, areas, packages, editing 
     // submit stale values (backend re-enforces this as well)
     const isFree = f.connection_type === 'free'
     const data = { ...f, area_id: f.area_id || null, package_id: f.package_id || null, sub_area_id: f.sub_area_id || null, road_id: f.road_id || null,
+      collector_id: f.collector_id ? Number(f.collector_id) : null,
       monthly_bill: isFree ? 0 : f.monthly_bill, connection_fee: isFree ? 0 : f.connection_fee }
     try {
       if (editing) await window.api.customers.update(editing.id, data)
@@ -490,7 +628,10 @@ export function CustomerForm({ open, onClose, onSaved, areas, packages, editing 
           {field('name', t('name'), <input className="input" value={f.name || ''} onChange={(e) => set('name', e.target.value)} autoFocus />)}
           {field('father_name', t('fatherName'), <input className="input" value={f.father_name || ''} onChange={(e) => set('father_name', e.target.value)} />)}
           {field('mobile', t('mobile'), <input className="input" placeholder="01XXXXXXXXX" value={f.mobile || ''} onChange={(e) => set('mobile', e.target.value)} />)}
-          {field('nid', 'NID', <input className="input" value={f.nid || ''} onChange={(e) => set('nid', e.target.value)} />)}
+          {field('previous_due_bill', t('previousDueBill'), (
+            <input type="number" min="0" step="0.01" className="input" value={f.previous_due_bill ?? ''}
+              onChange={(e) => set('previous_due_bill', e.target.value)} />
+          ))}
           {field('address', t('address'), <textarea className="input min-h-[60px]" value={f.address || ''} onChange={(e) => set('address', e.target.value)} />, 2)}
           {field('area_id', t('area'), (
             <select className="input" value={f.area_id ?? ''} onChange={(e) => set('area_id', e.target.value)}>
@@ -505,10 +646,18 @@ export function CustomerForm({ open, onClose, onSaved, areas, packages, editing 
               <option value="free">{t('free')}</option>
             </select>
           ))}
-          {/* Note input keeps working for EXISTING connections so old note data
-              stays editable; new-connection form uses the Paid/Free dropdown
-              in its place (note data in the DB is never touched) */}
-          {editing && field('note', t('note'), <input className="input" value={f.note || ''} onChange={(e) => set('note', e.target.value)} />)}
+          {/* collector assignment (admin/manager only — collectors are locked to
+              their own profile and the backend ignores it for them) */}
+          {!isCollectorAccount && field('collector_id', lang === 'bn' ? 'কালেক্টর (ঐচ্ছিক)' : 'Collector (optional)', (
+            <select className="input" value={f.collector_id ?? ''} onChange={(e) => set('collector_id', e.target.value)}>
+              <option value="">{lang === 'bn' ? '— অ্যাসাইন করা হয়নি —' : '— unassigned —'}</option>
+              {f.collector_id && !collectorOptions.some((c: any) => Number(c.id) === Number(f.collector_id)) && (
+                <option value={f.collector_id}>{f._collector_name || `#${f.collector_id}`}</option>
+              )}
+              {collectorOptions.map((c: any) => <option key={c.id} value={c.id}>{c.label}</option>)}
+            </select>
+          ))}
+          {editing && field('note', t('note'), <input className="input" value={f.note || ''} onChange={(e) => set('note', e.target.value)} />, 2)}
         </div>
         <h4 className="text-xs font-semibold text-slate-400 uppercase mt-4 mb-2">{t('connectionInfo')}</h4>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

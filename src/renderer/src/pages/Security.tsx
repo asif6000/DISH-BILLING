@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from 'react'
-import { Plus, Pencil, Trash2, KeyRound, Download, Upload, HardDrive } from 'lucide-react'
+import { Plus, Pencil, Trash2, KeyRound, Download, Upload, HardDrive, LayoutDashboard } from 'lucide-react'
 import { useI18n } from '../lib/i18n'
 import { PageHeader, Modal, useToast, StatusBadge, ConfirmDialog } from '../components/ui'
 import { DataTable, Column } from '../components/DataTable'
 import { money, dateFmt } from '../lib/format'
 import { errMsg } from '../lib/api'
 import { PERMISSION_CATALOG } from '@shared/permissions'
+import { KpiPermissionsModal } from '../components/KpiPermissionsModal'
+import { useCollectors } from '../components/CollectorPicker'
 import { useCan } from '../lib/perms'
 
 const TABS = ['users', 'roles', 'logs', 'logins', 'backup'] as const
@@ -14,13 +16,23 @@ type Tab = typeof TABS[number]
 export default function SecurityPage({ tab: initial }: { tab?: string }) {
   const { t, lang } = useI18n()
   const can = useCan()
-  const [tab, setTab] = useState<Tab>((initial as Tab) || 'users')
-  useEffect(() => { setTab((initial as Tab) || 'users') }, [initial])
+  const canSecurity = can('security')
+  // User Management lives under /security/users but is protected by the
+  // 'users' permission — an account with users.access must not be blocked by
+  // the broader Security guard (this caused a false "no permission" page for
+  // Administrators whose role grants users but not security).
+  const canUsers = can('users')
+  const allowedTabs = TABS.filter((tb) => tb === 'users' ? (canUsers || canSecurity) : canSecurity)
+  const requested = initial as Tab | undefined
+  const [tab, setTab] = useState<Tab>(requested && allowedTabs.includes(requested) ? requested : (allowedTabs[0] || 'users'))
+  useEffect(() => {
+    setTab(requested && allowedTabs.includes(requested) ? requested : (allowedTabs[0] || 'users'))
+  }, [initial, canSecurity, canUsers])
 
-  // direct-URL guard: the menu is hidden without the security permission, and
-  // opening /security/* directly also shows Access Denied (the backend denies
-  // every action anyway — this keeps the UI honest)
-  if (!can('security')) {
+  // direct-URL guard: Users needs users.access; Roles/Logs/Backup need the
+  // security module. The backend denies every action anyway — this keeps the
+  // UI honest without blocking a legitimate User Manager.
+  if (requested ? !allowedTabs.includes(requested) : !allowedTabs.length) {
     return (
       <div>
         <PageHeader title={t('nav_security')} />
@@ -35,7 +47,7 @@ export default function SecurityPage({ tab: initial }: { tab?: string }) {
     <div>
       <PageHeader title={t('nav_security')} />
       <div className="flex gap-1 mb-4 flex-wrap">
-        {TABS.map((tb) => (
+        {allowedTabs.map((tb) => (
           <button key={tb} onClick={() => setTab(tb)}
             className={`px-3.5 py-2 rounded-lg text-sm font-medium transition ${tab === tb ? 'bg-brand-600 text-white' : 'card hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
             {tb === 'users' ? t('security_users') : tb === 'roles' ? t('security_roles') : tb === 'logs' ? t('security_logs') : tb === 'logins' ? t('security_logins') : t('security_backup')}
@@ -61,6 +73,7 @@ function UsersTab() {
   const [pwOpen, setPwOpen] = useState(false)
   const [deleting, setDeleting] = useState<any>(null)
   const [permUser, setPermUser] = useState<any>(null)
+  const [kpiUser, setKpiUser] = useState<any>(null)
 
   const load = () => {
     window.api.users.list().then(setRows).catch((e) => toast.push('error', errMsg(e)))
@@ -84,6 +97,7 @@ function UsersTab() {
       ]} rows={rows} exportName="users"
         actions={(r) => (
           <div className="flex justify-end gap-1">
+            <button className="btn-secondary btn-sm" title={lang === 'bn' ? 'ড্যাশবোর্ড KPI পারমিশন' : 'Dashboard KPI permissions'} onClick={() => setKpiUser(r)}><LayoutDashboard size={13} /></button>
             <button className="btn-secondary btn-sm" title={t('permissionTitle')} onClick={() => setPermUser(r)}><KeyRound size={13} /></button>
             <button className="btn-secondary btn-sm" onClick={() => { setEditing(r); setOpen(true) }}><Pencil size={13} /></button>
             <button className="btn-secondary btn-sm text-red-600" onClick={() => setDeleting(r)}><Trash2 size={13} /></button>
@@ -95,6 +109,7 @@ function UsersTab() {
         onConfirm={() => window.api.users.delete(deleting.id).then(() => { toast.push('success', t('deleted')); load() }).catch((e) => toast.push('error', errMsg(e)))}
         title={t('delete')} message={`${deleting?.username} — ${t('confirmDelete')}`} />
       {permUser && <PermissionModal user={permUser} onClose={() => setPermUser(null)} />}
+      {kpiUser && <KpiPermissionsModal user={kpiUser} onClose={() => setKpiUser(null)} />}
     </div>
   )
 }
@@ -225,6 +240,8 @@ function UserModal({ open, onClose, editing, roles, onSaved }: any) {
     if (!open) return
     setF(editing ? { ...editing, password: '' } : { username: '', full_name: '', mobile: '', password: '', role_id: '', status: 'active' })
   }, [open, editing])
+  // active collectors for the optional explicit user↔collector link
+  const { list: collectors } = useCollectors()
 
   const submit = async () => {
     if (!f.username || !f.full_name || (!editing && !f.password) || !f.role_id) {
@@ -233,8 +250,10 @@ function UserModal({ open, onClose, editing, roles, onSaved }: any) {
     }
     setBusy(true)
     try {
+      const savedId: number = editing ? editing.id : await window.api.users.create(f)
       if (editing) await window.api.users.update(editing.id, f)
-      else await window.api.users.create(f)
+      // explicit link (optional) — the collector dashboard uses this identity
+      await window.api.users.linkCollector(savedId, f.collector_id ? Number(f.collector_id) : null)
       toast.push('success', t('saved'))
       onSaved()
     } catch (e) { toast.push('error', errMsg(e)) }
@@ -266,6 +285,16 @@ function UserModal({ open, onClose, editing, roles, onSaved }: any) {
               <option value="inactive">{t('inactive')}</option>
               {isSuper && <option value="suspended">{lang === 'bn' ? 'স্থগিত' : 'Suspended'}</option>}
             </select></div>
+        </div>
+        <div>
+          <label className="label">{lang === 'bn' ? 'Collector প্রোফাইল লিংক' : 'Linked collector profile'} <span className="text-[10px] text-slate-400">({lang === 'bn' ? 'ঐচ্ছিক' : 'optional'})</span></label>
+          <select className="input" value={f.collector_id || ''} onChange={(e) => setF({ ...f, collector_id: e.target.value })}>
+            <option value="">—</option>
+            {collectors.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+          </select>
+          <p className="text-[10px] text-slate-400 mt-0.5">{lang === 'bn'
+            ? 'Collector ড্যাশবোর্ড ও কালেকশনের জন্য এই অ্যাকাউন্ট যে collector-এর, সেটি। না দিলে নাম মিলিয়ে (Full Name = Staff name) যুক্ত হয়।'
+            : 'Which collector this account collects as (dashboard + payments). If empty, the legacy full-name match is used.'}</p>
         </div>
       </div>
       <div className="flex justify-end gap-2 mt-4">

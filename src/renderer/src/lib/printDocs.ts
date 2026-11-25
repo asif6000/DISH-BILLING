@@ -7,7 +7,7 @@ function esc(s: any): string {
 }
 
 // company header block shared by invoice & receipt: logo + name + contacts
-function companyHeaderHTML(company: Company, color: string): string {
+function companyHeaderHTML(company: Company, color: string, showEmail = true): string {
   return `
       <div style="display:flex;gap:10px;align-items:center">
         ${company.logo ? `<img src="${esc(company.logo)}" alt="logo" style="height:44px;width:44px;object-fit:contain" />` : ''}
@@ -17,7 +17,7 @@ function companyHeaderHTML(company: Company, color: string): string {
         </div>
       </div>
       <div style="font-size:12px;color:#555">${esc(company.address)}</div>
-      <div style="font-size:12px;color:#555">📞 ${esc(company.mobile)}${company.mobile_alt ? ` &nbsp;|&nbsp; 📞 ${esc(company.mobile_alt)}` : ''}${company.email ? ` &nbsp;|&nbsp; ✉ ${esc(company.email)}` : ''}</div>`
+      <div style="font-size:12px;color:#555">📞 ${esc(company.mobile)}${company.mobile_alt ? ` &nbsp;|&nbsp; 📞 ${esc(company.mobile_alt)}` : ''}${showEmail && company.email ? ` &nbsp;|&nbsp; ✉ ${esc(company.email)}` : ''}</div>`
 }
 
 export function invoiceHTML(bill: any, customer: any, company: Company): string {
@@ -86,7 +86,7 @@ export function receiptHTML(payment: any, customer: any, company: Company): stri
   <div style="max-width:680px;margin:24px auto;font-family:'Nirmala UI','Noto Sans Bengali','Segoe UI',sans-serif;color:#111">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #059669;padding-bottom:12px">
       <div>
-        ${companyHeaderHTML(company, '#059669')}
+        ${companyHeaderHTML(company, '#059669', false)}
       </div>
       <div style="text-align:right">
         <div style="background:#059669;color:#fff;padding:4px 14px;border-radius:6px;font-size:13px">PAYMENT RECEIPT</div>
@@ -96,7 +96,7 @@ export function receiptHTML(payment: any, customer: any, company: Company): stri
     </div>
     <table style="width:100%;margin-top:14px;font-size:13px;border-collapse:collapse">
       <tr><td style="padding:6px;color:#666;width:30%">Customer</td><td style="padding:6px"><b>${esc(customer.name)}</b> (${esc(customer.code)})</td></tr>
-      <tr><td style="padding:6px;color:#666">Area</td><td style="padding:6px">${esc(customer.area_name || '-')}</td></tr>
+      <tr><td style="padding:6px;color:#666">Address</td><td style="padding:6px">${esc(customer.address || '-')}</td></tr>
       <tr><td style="padding:6px;color:#666">Method</td><td style="padding:6px">${esc(BN_METHODS[payment.method] || payment.method)}</td></tr>
       <tr><td style="padding:6px;color:#666">Type</td><td style="padding:6px">${esc(BN_TYPES[payment.type] || payment.type)}</td></tr>
       <tr><td style="padding:6px;color:#666">Reference / TrxID</td><td style="padding:6px">${esc(payment.reference || '-')}</td></tr>

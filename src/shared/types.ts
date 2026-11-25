@@ -24,6 +24,11 @@ export interface UserInfo {
   roleName: string
   permissions: string[]
   permissionMode?: string
+  // set only while a SUPER_ADMIN is impersonating this account ("Login As User")
+  impersonatedBy?: number
+  impersonatedByName?: string
+  impersonationStartedAt?: number
+  impersonationLogId?: number
 }
 
 export interface CustomerFilters extends ListParams {
@@ -31,6 +36,8 @@ export interface CustomerFilters extends ListParams {
   areaId?: number
   packageId?: number
   dueOnly?: boolean
+  previousDueOnly?: boolean
+  collectorId?: number
 }
 
 export interface BillRow {

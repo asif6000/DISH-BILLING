@@ -1,5 +1,20 @@
 // Database schema. Applied in order, tracked by PRAGMA user_version.
 // Version 1: initial schema
+import { LEGACY_MODULES, PERMISSION_CATALOG } from '../../shared/permissions'
+import { GENERIC_ENTITY_KEYS } from '../../shared/entities'
+
+// Every permission key the app knows about: catalog modules, legacy modules and
+// the generic-entity modules. A module key dominates all of its granular keys in
+// hasPermission(), so holding all module keys == full access to every feature.
+const ALL_MODULE_KEYS: string[] = Array.from(new Set<string>([
+  ...PERMISSION_CATALOG.map((m) => m.module),
+  ...LEGACY_MODULES,
+  ...GENERIC_ENTITY_KEYS
+]))
+// SQL literal (JSON array) for the migrations below. JSON only contains double
+// quotes, but escape single quotes defensively.
+const ALL_MODULE_KEYS_JSON = JSON.stringify(ALL_MODULE_KEYS).replace(/'/g, "''")
+
 export const MIGRATIONS: string[] = [
   `
   -- ================= AUTH / SECURITY =================
@@ -715,5 +730,277 @@ export const MIGRATIONS: string[] = [
 ,
   `-- Version 19: role descriptions (Role Management Add/Edit form).
   ALTER TABLE roles ADD COLUMN description TEXT;
+  `,
+
+  `-- Version 20: individual Collector Dashboard KPI overrides.
+  -- Priority: individual override (this table) → role default (roles.permissions
+  -- dashboard/dashboard.kpi.*) → deny. A row with allowed=0 DENIES a card even
+  -- when the role grants it; allowed=1 grants it even when the role doesn't.
+  -- No rows = pure role defaults. Cleared by "Reset to Role Defaults".
+  CREATE TABLE collector_kpi_overrides (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kpi_key TEXT NOT NULL,
+    allowed INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_by INTEGER,
+    UNIQUE(user_id, kpi_key)
+  );
+  `,
+
+  `-- Version 21: explicit user↔collector link.
+  -- Identity resolution priority: collectors.user_id (set from
+  -- Security → Users) → the legacy name match (users.full_name = staff.name)
+  -- → no profile. Partial unique index: one account links to one collector.
+  ALTER TABLE collectors ADD COLUMN user_id INTEGER REFERENCES users(id);
+  CREATE UNIQUE INDEX idx_collectors_user ON collectors(user_id) WHERE user_id IS NOT NULL;
+  `,
+
+  `-- Version 22: customer-wise primary collector assignment.
+  -- customers.collector_id = the collector assigned to collect this customer's
+  -- bills (NULL = unassigned; a customer in a collector's assigned AREA is still
+  -- covered by the legacy area rule when no explicit assignment exists).
+  -- Reassign = update this column; remove = NULL; payment history keeps the
+  -- original payments.collector_id of each receipt.
+  ALTER TABLE customers ADD COLUMN collector_id INTEGER REFERENCES collectors(id);
+  CREATE INDEX idx_customers_collector ON customers(collector_id);
+  `
+,
+  `-- Version 23: backfill the explicit user↔collector link for existing data.
+  -- 1) unique name match: an active Collector account whose full_name equals the
+  --    Staff name of exactly one unlinked active collector.
+  -- 2) single-collector bootstrap: exactly one unlinked active collector and
+  --    exactly one unlinked active Collector account → link them (this is the
+  --    common upgrade case where the account predates collectors.user_id).
+  -- Never creates collector/staff rows and never links Admin/Manager accounts.
+  UPDATE collectors
+  SET user_id = (
+    SELECT u.id FROM users u JOIN roles r ON r.id = u.role_id
+    WHERE r.name = 'Collector' AND u.status = 'active'
+      AND LOWER(TRIM(u.full_name)) = LOWER(TRIM((SELECT name FROM staff WHERE id = collectors.staff_id)))
+      AND NOT EXISTS (SELECT 1 FROM collectors c2 WHERE c2.user_id = u.id)
+    ORDER BY u.id LIMIT 1
+  )
+  WHERE user_id IS NULL
+    AND status = 'active'
+    AND (SELECT COUNT(*) FROM collectors c3
+         WHERE c3.user_id IS NULL AND c3.status = 'active'
+           AND LOWER(TRIM((SELECT name FROM staff WHERE id = c3.staff_id))) =
+               LOWER(TRIM((SELECT name FROM staff WHERE id = collectors.staff_id)))) = 1
+    AND (SELECT COUNT(*) FROM users u JOIN roles r ON r.id = u.role_id
+         WHERE r.name = 'Collector' AND u.status = 'active'
+           AND LOWER(TRIM(u.full_name)) = LOWER(TRIM((SELECT name FROM staff WHERE id = collectors.staff_id)))
+           AND NOT EXISTS (SELECT 1 FROM collectors c2 WHERE c2.user_id = u.id)) = 1;
+
+  UPDATE collectors
+  SET user_id = (
+    SELECT u.id FROM users u JOIN roles r ON r.id = u.role_id
+    WHERE r.name = 'Collector' AND u.status = 'active'
+      AND NOT EXISTS (SELECT 1 FROM collectors c2 WHERE c2.user_id = u.id)
+    ORDER BY u.id LIMIT 1
+  )
+  WHERE user_id IS NULL
+    AND status = 'active'
+    AND (SELECT COUNT(*) FROM collectors c3 WHERE c3.user_id IS NULL AND c3.status = 'active') = 1
+    AND (SELECT COUNT(*) FROM users u JOIN roles r ON r.id = u.role_id
+         WHERE r.name = 'Collector' AND u.status = 'active'
+           AND NOT EXISTS (SELECT 1 FROM collectors c2 WHERE c2.user_id = u.id)) = 1;
+  `,
+  `-- Version 25: SECURITY FIX — the reserved 'all' permission may exist ONLY on
+  -- the SUPER_ADMIN role. hasPermission() treats 'all' as "everything" and
+  -- isSuper() treats it as "is super admin", so any other role holding it (old
+  -- seed data / hand-edited role JSON) silently became a SUPER_ADMIN. roles:save()
+  -- already refuses to grant 'all' to a non-super role, so such rows are always
+  -- stale data: strip the key and keep every other permission untouched.
+  UPDATE roles
+  SET permissions = COALESCE((
+    SELECT json_group_array(value) FROM json_each(roles.permissions) WHERE value <> 'all'
+  ), '[]')
+  WHERE name <> 'SUPER_ADMIN'
+    AND EXISTS (SELECT 1 FROM json_each(roles.permissions) WHERE value = 'all');
+  `,
+  `-- Version 26: Administrator = FULL access. The Administrator role now holds every
+  -- permission key the app knows about (all catalog modules incl. security /
+  -- settings / automation, the legacy modules and every generic-entity module), so
+  -- an Administrator can do every job in the app. 'all' is still reserved for
+  -- SUPER_ADMIN, and the SUPER_ADMIN account itself remains untouchable.
+  UPDATE roles SET permissions = '${ALL_MODULE_KEYS_JSON}'
+    WHERE name = 'Administrator' AND is_system = 1;
+  `,
+  `-- Version 27: impersonation audit trail (Super Admin “Login As User”).
+  -- One row per impersonation session: who impersonated whom, when it started,
+  -- when it ended, how long it lasted. No passwords/tokens are ever stored.
+  CREATE TABLE IF NOT EXISTS impersonation_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    super_admin_id INTEGER,
+    super_admin_username TEXT NOT NULL,
+    target_user_id INTEGER NOT NULL,
+    target_username TEXT NOT NULL,
+    target_role TEXT,
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    ended_at TEXT,
+    duration_seconds INTEGER,
+    end_reason TEXT,
+    note TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_impersonation_logs_target ON impersonation_logs(target_user_id);
+  CREATE INDEX IF NOT EXISTS idx_impersonation_logs_started ON impersonation_logs(started_at);
+  `,
+  `-- Version 28: SMS GATEWAY + PER-USER SMS WALLET (separate from money balances).
+  -- All SMS accounting lives in the INSTALLATION database (primary), keyed by
+  -- user_id, so a wallet follows the account and the Super Admin can audit every
+  -- wallet. It is NEVER mixed with accounts.balance / transactions (BDT ledger).
+  CREATE TABLE IF NOT EXISTS sms_packages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    sms_count INTEGER NOT NULL CHECK (sms_count > 0),
+    price REAL NOT NULL CHECK (price >= 0),
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS sms_wallets (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    balance INTEGER NOT NULL DEFAULT 0 CHECK (balance >= 0),
+    total_purchased INTEGER NOT NULL DEFAULT 0,
+    total_used INTEGER NOT NULL DEFAULT 0,
+    total_refunded INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS sms_purchases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    package_id INTEGER REFERENCES sms_packages(id) ON DELETE SET NULL,
+    package_name TEXT NOT NULL,
+    sms_count INTEGER NOT NULL CHECK (sms_count > 0),
+    amount REAL NOT NULL CHECK (amount >= 0),
+    method TEXT NOT NULL,
+    trx_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    note TEXT,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    verified_by INTEGER REFERENCES users(id),
+    verified_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(method, trx_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS sms_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    type TEXT NOT NULL,
+    sms_count INTEGER NOT NULL,
+    balance_after INTEGER NOT NULL,
+    amount REAL NOT NULL DEFAULT 0,
+    reference TEXT,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    note TEXT,
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_sms_tx_user ON sms_transactions(user_id, id DESC);
+  CREATE INDEX IF NOT EXISTS idx_sms_tx_type ON sms_transactions(type);
+
+  CREATE TABLE IF NOT EXISTS sms_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    recipient TEXT NOT NULL,
+    message TEXT NOT NULL,
+    sms_count INTEGER NOT NULL CHECK (sms_count > 0),
+    provider TEXT,
+    provider_message_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    error TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    wallet_txn_id INTEGER REFERENCES sms_transactions(id),
+    refunded INTEGER NOT NULL DEFAULT 0,
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    sent_at TEXT,
+    delivered_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_sms_messages_user ON sms_messages(user_id, id DESC);
+  CREATE INDEX IF NOT EXISTS idx_sms_messages_status ON sms_messages(status);
+
+  CREATE TABLE IF NOT EXISTS sms_gateway_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    provider TEXT NOT NULL DEFAULT 'generic',
+    gateway_url TEXT NOT NULL DEFAULT '',
+    sender_id TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 0,
+    refund_on_failed INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_by INTEGER REFERENCES users(id)
+  );
+  INSERT OR IGNORE INTO sms_gateway_config (id) VALUES (1);
+
+  -- Existing roles that already had SMS/messaging access also get the new
+  -- 'sms' module key (wallet view/buy/send). Manager is included because the
+  -- wallet is a standard staff feature. Super Admin grants further access from
+  -- Security → Roles.
+  UPDATE roles SET permissions = json_insert(permissions, '$[#]', 'sms')
+    WHERE json_valid(permissions)
+      AND (permissions LIKE '%"messaging"%' OR name = 'Manager')
+      AND NOT EXISTS (SELECT 1 FROM json_each(roles.permissions) WHERE value = 'sms');
+  `,
+  `-- Version 29: BulkSMSBD gateway metadata + delivery reports + low-balance alerts.
+  -- Additive only: existing wallets/transactions/messages are preserved.
+  ALTER TABLE sms_messages ADD COLUMN request_id TEXT;
+  ALTER TABLE sms_messages ADD COLUMN gateway_response TEXT;
+  ALTER TABLE sms_messages ADD COLUMN delivery_checked_at TEXT;
+  ALTER TABLE sms_messages ADD COLUMN delivery_attempts INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE sms_gateway_config ADD COLUMN balance_url TEXT NOT NULL DEFAULT '';
+  ALTER TABLE sms_gateway_config ADD COLUMN dlr_url TEXT NOT NULL DEFAULT '';
+  ALTER TABLE sms_gateway_config ADD COLUMN low_balance_threshold INTEGER NOT NULL DEFAULT 20;
+  -- Every existing account gets a real 0-SMS wallet row (never a fake credit).
+  INSERT OR IGNORE INTO sms_wallets (user_id, balance) SELECT id, 0 FROM users;
+  CREATE INDEX IF NOT EXISTS idx_sms_messages_request ON sms_messages(request_id);
+  CREATE INDEX IF NOT EXISTS idx_sms_messages_provider_id ON sms_messages(provider_message_id);
+  `,
+  `-- Version 30: provider-credit purchase history + guaranteed wallet rows.
+  -- A provider purchase records real money/SMS bought from BulkSMSBD for the
+  -- SHARED gateway account. It never changes any user's internal wallet; the
+  -- Super Admin allocates wallet credits separately (audited adjustment).
+  CREATE TABLE IF NOT EXISTS sms_provider_purchases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL,
+    sms_count INTEGER NOT NULL CHECK (sms_count > 0),
+    amount REAL NOT NULL DEFAULT 0 CHECK (amount >= 0),
+    method TEXT NOT NULL DEFAULT 'bank',
+    trx_id TEXT NOT NULL,
+    note TEXT,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    purchased_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(provider, method, trx_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_sms_provider_purchases_created ON sms_provider_purchases(id DESC);
+
+  -- Every newly created account gets its own real (0 SMS) wallet row. Existing
+  -- accounts were backfilled by version 29; this trigger closes the gap for all
+  -- future users without any fake credit.
+  CREATE TRIGGER IF NOT EXISTS trg_users_sms_wallet
+  AFTER INSERT ON users
+  BEGIN
+    INSERT OR IGNORE INTO sms_wallets (user_id, balance) VALUES (NEW.id, 0);
+  END;
+  `,
+  `-- Version 31: customer opening/previous due bill amount.
+  -- This is the old dues a customer brought into the software. Existing NID
+  -- data is preserved in the customers.nid column; this is a separate amount.
+  ALTER TABLE customers ADD COLUMN previous_due_bill REAL NOT NULL DEFAULT 0;
+  CREATE INDEX IF NOT EXISTS idx_customers_previous_due ON customers(previous_due_bill);
+  `,
+  `-- Version 32: default SMS plan catalogue (৳0.42 per SMS).
+  -- Existing packages are preserved; these are inserted only once by name.
+  INSERT OR IGNORE INTO sms_packages (name, sms_count, price, description, status)
+  VALUES
+    ('Starter 1,000 SMS', 1000, 420, '0.42 Taka per SMS', 'active'),
+    ('Standard 5,000 SMS', 5000, 2100, '0.42 Taka per SMS', 'active'),
+    ('Business 10,000 SMS', 10000, 4200, '0.42 Taka per SMS', 'active');
   `
 ]

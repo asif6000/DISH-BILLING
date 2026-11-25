@@ -2,6 +2,7 @@
 import { ipcMain } from 'electron'
 import { getDb, logActivity, nextSeq, round2, today } from '../db'
 import { requirePermission } from './auth'
+import { resolveSessionCollector, collectorCustomerWhere, isCustomerAssignedTo } from './payments'
 
 function pad(n: number): string {
   return String(n).padStart(2, '0')
@@ -31,8 +32,13 @@ function creditAccount(db: any, amount: number, date: string, description: strin
 export function registerRenewalIpc(): void {
   // List customers with package + validity for the renewal page
   ipcMain.handle('renewal:list', (e, params: any = {}) => {
-    requirePermission(e, 'payments', 'view')
+    const s = requirePermission(e, 'payments', 'view')
     const db = getDb()
+    const me = resolveSessionCollector(db, s)
+    if (me.locked) {
+      if (me.error) throw new Error(me.error)
+      if (me.id == null) throw new Error('NO_COLLECTOR_PROFILE')
+    }
     const q = String(params.q || '').trim()
     const filter = params.filter || 'all'
     let sql = `SELECT c.id, c.code, c.name, c.mobile, c.status, c.monthly_bill, c.validity_till,
@@ -41,6 +47,7 @@ export function registerRenewalIpc(): void {
       LEFT JOIN packages p ON p.id = c.package_id
       LEFT JOIN areas a ON a.id = c.area_id
       WHERE c.status != 'inactive'`
+    if (me.locked && me.id != null) sql += ` AND ${collectorCustomerWhere(me.id)}`
     const args: any[] = []
     if (q) {
       sql += ' AND (c.name LIKE ? OR c.code LIKE ? OR c.mobile LIKE ?)'
@@ -66,9 +73,17 @@ export function registerRenewalIpc(): void {
   ipcMain.handle('renewal:renew', (e, input: any) => {
     const s = requirePermission(e, 'payments', 'collect')
     const db = getDb()
+    const me = resolveSessionCollector(db, s)
+    if (me.locked) {
+      if (me.error) throw new Error(me.error)
+      if (me.id == null) throw new Error('NO_COLLECTOR_PROFILE')
+    }
     const months = Math.max(1, Math.min(36, parseInt(input.months, 10) || 1))
     const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(input.customerId) as any
     if (!customer) throw new Error('CUSTOMER_NOT_FOUND')
+    if (me.locked && me.id != null) {
+      if (!isCustomerAssignedTo(db, me.id, customer.id)) throw new Error('CUSTOMER_NOT_ASSIGNED_TO_COLLECTOR')
+    }
     const amount = round2(Number(input.amount) || round2(Number(customer.monthly_bill) * months))
     if (!amount || amount <= 0) throw new Error('INVALID_AMOUNT')
     const date = today()
@@ -79,8 +94,9 @@ export function registerRenewalIpc(): void {
 
     db.exec('BEGIN')
     try {
+      const collectorId = me.locked ? me.id : (input.collectorId || null)
       db.prepare(`INSERT INTO payments (receipt_no, customer_id, amount, method, reference, note, collector_id, reseller_id, payment_date, type, created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(receiptNo, customer.id, amount, input.method || 'cash', input.reference || null, input.note || `Package renewal — ${months} month(s)`, input.collectorId || null, input.resellerId || null, date, 'renewal', s.username)
+        .run(receiptNo, customer.id, amount, input.method || 'cash', input.reference || null, input.note || `Package renewal — ${months} month(s)`, collectorId, input.resellerId || null, date, 'renewal', s.username)
       const newStatus = customer.status === 'free' ? 'free' : 'active'
       db.prepare('UPDATE customers SET validity_till = ?, status = ? WHERE id = ?').run(validityTill, newStatus, customer.id)
       db.prepare(`INSERT INTO customer_connections (customer_id, action, from_value, to_value, date, note, created_by) VALUES (?,?,?,?,?,?,?)`)

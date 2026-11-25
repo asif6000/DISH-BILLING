@@ -2,6 +2,7 @@ import { app, BrowserWindow, Menu, shell, dialog } from 'electron'
 import { join } from 'path'
 import { initDb, getDbPath, getSetting, integrityCheck } from './db'
 import { registerAllIpc } from './ipc'
+import { cleanupWindow } from './ipc/auth'
 import { generateInternal } from './ipc/billing'
 import { autoBackup, backupsDir } from './ipc/backup'
 import { initAutoUpdater } from './updater'
@@ -29,6 +30,14 @@ function createWindow(): void {
   })
 
   mainWindow.once('ready-to-show', () => mainWindow?.show())
+
+  // release this window's workspace connection and close any impersonation
+  // audit row when the window goes away
+  const winId = mainWindow.webContents.id
+  mainWindow.on('closed', () => {
+    try { cleanupWindow(winId) } catch { /* app shutting down */ }
+    mainWindow = null
+  })
 
   // Prevent accidental close without confirmation when logged in
   mainWindow.on('close', (ev) => {

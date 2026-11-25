@@ -2,11 +2,12 @@ import { ipcMain, shell, Notification } from 'electron'
 import { getDb, logActivity, round2, today, currentMonth, getSetting } from '../db'
 import { requirePermission } from './auth'
 import { generateInternal } from './billing'
+import { sendSmsForSession } from './sms'
 
 export function registerMiscIpc(): void {
   // ---------- Reseller wallet ----------
   ipcMain.handle('resellers:txn', (e, data: { reseller_id: number; type: 'recharge' | 'payment' | 'commission' | 'due'; amount: number; note?: string; date?: string }) => {
-    const s = requirePermission(e, 'resellers')
+    const s = requirePermission(e, 'resellers', 'edit')
     const db = getDb()
     const amount = round2(Number(data.amount))
     if (!(amount > 0)) throw new Error('INVALID_AMOUNT')
@@ -44,7 +45,7 @@ export function registerMiscIpc(): void {
 
   // ---------- Transactions (accounts) bespoke ----------
   ipcMain.handle('transactions:create', (e, data: any) => {
-    const s = requirePermission(e, 'accounts')
+    const s = requirePermission(e, 'accounts', 'create')
     const db = getDb()
     const amount = round2(Number(data.amount))
     if (!(amount > 0)) throw new Error('INVALID_AMOUNT')
@@ -75,7 +76,7 @@ export function registerMiscIpc(): void {
 
   // edit an expense/income: reverse the old deduction, apply the new one (atomic)
   ipcMain.handle('transactions:update', (e, id: number, data: any) => {
-    const s = requirePermission(e, 'accounts')
+    const s = requirePermission(e, 'accounts', 'edit')
     const db = getDb()
     const old = db.prepare('SELECT * FROM transactions WHERE id = ?').get(id) as any
     if (!old) throw new Error('NOT_FOUND')
@@ -107,7 +108,7 @@ export function registerMiscIpc(): void {
 
   // delete an expense/income: reverse its previous deduction (ledger stays consistent)
   ipcMain.handle('transactions:delete', (e, id: number) => {
-    const s = requirePermission(e, 'accounts')
+    const s = requirePermission(e, 'accounts', 'delete')
     const db = getDb()
     const old = db.prepare('SELECT * FROM transactions WHERE id = ?').get(id) as any
     if (!old) throw new Error('NOT_FOUND')
@@ -157,7 +158,7 @@ export function registerMiscIpc(): void {
   })
 
   ipcMain.handle('account_transfers:create', (e, data: any) => {
-    const s = requirePermission(e, 'accounts')
+    const s = requirePermission(e, 'accounts', 'create')
     const db = getDb()
     const amount = round2(Number(data.amount))
     if (!(amount > 0)) throw new Error('INVALID_AMOUNT')
@@ -205,7 +206,7 @@ export function registerMiscIpc(): void {
   // clicks UPDATE the existing draft/queued message; a SENT reminder keeps its
   // history and is never re-created.
   ipcMain.handle('messages:composeDue', (e, templateId: number, month: string) => {
-    const s = requirePermission(e, 'messaging')
+    const s = requirePermission(e, 'messaging', 'send')
     const db = getDb()
     if (!/^\d{4}-\d{2}$/.test(String(month || ''))) throw new Error('INVALID_MONTH')
     const template = db.prepare('SELECT * FROM sms_templates WHERE id = ?').get(templateId) as any
@@ -249,8 +250,8 @@ export function registerMiscIpc(): void {
     return { created, updated, skipped, total: dues.length }
   })
 
-  ipcMain.handle('messages:send', (e, messageId: number) => {
-    const s = requirePermission(e, 'messaging')
+  ipcMain.handle('messages:send', async (e, messageId: number) => {
+    const s = requirePermission(e, 'messaging', 'send')
     const db = getDb()
     const msg = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId) as any
     if (!msg) throw new Error('NOT_FOUND')
@@ -259,10 +260,15 @@ export function registerMiscIpc(): void {
       const phone = '88' + String(msg.mobile).replace(/\D/g, '')
       shell.openExternal(`https://wa.me/${phone}?text=${encodeURIComponent(msg.text)}`)
     } else {
-      // SMS: no gateway offline — record as queued for external gateway
-      db.prepare('UPDATE messages SET status = ? WHERE id = ?').run('queued', messageId)
-      shell.openExternal(`sms:${msg.mobile}?body=${encodeURIComponent(msg.text)}`)
-      return { status: 'queued' }
+      // SMS is delivered by the server-side gateway. The sender's own SMS wallet
+      // is debited atomically; a failed provider call is refunded by policy.
+      // Idempotency key = the message row, so a double click never debits twice.
+      const result = await sendSmsForSession(s, msg.mobile, msg.text, `legacy_message:${s.userId}:${messageId}`)
+      const status = result.status === 'failed' ? 'failed' : 'sent'
+      db.prepare("UPDATE messages SET status = ?, sent_at = CASE WHEN ? = 'sent' THEN datetime('now') ELSE sent_at END WHERE id = ?")
+        .run(status, status, messageId)
+      logActivity(s.userId, s.username, 'send_message', 'messaging', `${messageId}:${status}:${result.smsCount || 0} SMS`)
+      return { ...result, status }
     }
     db.prepare('UPDATE messages SET status = ?, sent_at = datetime(\'now\') WHERE id = ?').run('sent', messageId)
     logActivity(s.userId, s.username, 'send_message', 'messaging', String(messageId))
@@ -270,7 +276,7 @@ export function registerMiscIpc(): void {
   })
 
   ipcMain.handle('messages:markSent', (e, messageId: number) => {
-    const s = requirePermission(e, 'messaging')
+    const s = requirePermission(e, 'messaging', 'send')
     getDb().prepare('UPDATE messages SET status = ?, sent_at = datetime(\'now\') WHERE id = ?').run('sent', messageId)
     logActivity(s.userId, s.username, 'mark_message_sent', 'messaging', String(messageId))
     return true

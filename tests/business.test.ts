@@ -11,6 +11,9 @@ import { registerInventoryIpc } from '../src/main/ipc/inventory'
 import { registerMiscIpc } from '../src/main/ipc/misc'
 import { registerDashboardIpc } from '../src/main/ipc/dashboard'
 import { registerReportIpc } from '../src/main/ipc/reports'
+import { registerAccountsIpc } from '../src/main/ipc/accounts'
+import { registerImpersonationIpc } from '../src/main/ipc/impersonation'
+import { registerSmsIpc } from '../src/main/ipc/sms'
 
 const handlers = () => (require('./electron-stub.cjs').ipcMain._handlers as Record<string, Function>)
 
@@ -31,12 +34,15 @@ async function main() {
   const userData = path.join(os.tmpdir(), 'ava-test-userData')
   fs.mkdirSync(userData, { recursive: true })
   fs.readdirSync(userData).filter((f: string) => f.startsWith('ava-cable')).forEach((f: string) => fs.unlinkSync(path.join(userData, f)))
+  // each test run starts with no account workspaces (per-user data isolation)
+  fs.rmSync(path.join(userData, 'workspaces'), { recursive: true, force: true })
   const db = initDb(path.join(userData, 'ava-cable.db'))
 
   registerAuthIpc(); registerGenericIpc(); registerCustomerIpc()
   registerBillingIpc(); registerPaymentIpc(); registerSettingsIpc()
   registerBackupIpc(); registerInventoryIpc(); registerMiscIpc()
   registerDashboardIpc(); registerReportIpc()
+  registerAccountsIpc(); registerImpersonationIpc(); registerSmsIpc()
   const H = handlers()
 
   section('auth')
@@ -96,6 +102,30 @@ async function main() {
   ok('connection-type test customers cleaned up', delMany.deleted === 2, delMany)
   const cGet = await H['customers:get'](fakeEvent, c1)
   ok('customer get with relations', cGet.customer._area === 'Mirpur' && cGet.customer._package === 'Basic')
+  await H['customers:setCollector'](fakeEvent, [c1], collectorId)
+  const assignmentCounts = await H['customers:assignmentCounts'](fakeEvent)
+  ok('administrator assigns customer explicitly to collector', (assignmentCounts as any[]).find((r) => r.id === collectorId)?.assigned === 1)
+
+  section('previous due bill (opening balance)')
+  await H['customers:update'](fakeEvent, c1, { previous_due_bill: 1250 })
+  const cPrev = await H['customers:get'](fakeEvent, c1)
+  ok('previous due bill saved as amount', Number(cPrev.customer.previous_due_bill) === 1250, cPrev.customer.previous_due_bill)
+  const prevDueList = await H['customers:list'](fakeEvent, { previousDueOnly: true, all: true })
+  ok('previous due filter returns the customer', (prevDueList.rows as any[]).some((r) => r.id === c1), prevDueList.total)
+  const statsPrev = await H['dashboard:stats'](fakeEvent, new Date().toISOString().slice(0, 7))
+  ok('dashboard previous due KPI sums opening dues', Number(statsPrev.previousDueBill) === 1250, statsPrev.previousDueBill)
+  await H['customers:update'](fakeEvent, c1, { previous_due_bill: 0 })
+  ok('previous due bill can be cleared', Number((await H['customers:get'](fakeEvent, c1)).customer.previous_due_bill) === 0)
+
+  section('disconnected customer filter')
+  const cDisc = await H['customers:create'](fakeEvent, { name: 'Disconnected Filter', mobile: '01399990001', area_id: areaId })
+  await H['customers:setStatus'](fakeEvent, cDisc, 'inactive')
+  const discInactive = await H['customers:list'](fakeEvent, { status: 'disconnected', all: true })
+  ok('disconnected filter includes inactive customers', (discInactive.rows as any[]).some((r) => r.id === cDisc), discInactive.total)
+  await H['customers:setStatus'](fakeEvent, cDisc, 'disconnected')
+  const discReal = await H['customers:list'](fakeEvent, { status: 'disconnected', all: true })
+  ok('disconnected filter includes disconnected customers', (discReal.rows as any[]).some((r) => r.id === cDisc), discReal.total)
+  await H['customers:delete'](fakeEvent, cDisc)
 
   section('billing generation')
   const month = new Date().toISOString().slice(0, 7)
@@ -207,6 +237,7 @@ async function main() {
   ok('cashbook rows computed', cashbook.rows.length > 0 && cashbook.rows[cashbook.rows.length - 1].balance === cashbook.rows[cashbook.rows.length - 1].balance)
   const pl = await H['reports:profitLoss'](fakeEvent, '2000-01-01', '2099-01-01')
   ok('P&L computes', typeof pl.netProfit === 'number' && pl.totalIncome > 0, pl)
+  ok('P&L does not double-count customer payments as other income', Number(pl.otherIncome) === 0, pl.otherIncome)
 
   section('resellers')
   const resId = await H['db:create'](fakeEvent, 'resellers', { name: 'Local Agent', mobile: '01611111111', commission_rate: 10, status: 'active' })
@@ -217,6 +248,7 @@ async function main() {
   section('dashboard & reports')
   const stats = await H['dashboard:stats'](fakeEvent, month)
   ok('dashboard counts', stats.totalCustomers === 3 && stats.activeCustomers === 3, stats)
+  ok('dashboard other income excludes collection cashbook rows', Number(stats.otherIncome) === 1000, stats.otherIncome)
   const dueList = await H['reports:dueList'](fakeEvent, month3)
   ok('due list has c2', dueList.some((d: any) => d.id === c2), dueList.map((d: any) => d.id))
 
@@ -236,9 +268,15 @@ async function main() {
   await H['permissions:set']({ sender: { id: 3 } } as any, mgrUserId, [{ key: 'reports.view' }])
   const mgrPerms = await H['permissions:get'](fakeEvent, mgrUserId)
   ok('admin grants granular permission to Manager', (mgrPerms.grants as any[]).some((g) => g.permission_key === 'reports.view'))
-  let delegErr = ''
-  try { await H['permissions:set']({ sender: { id: 3 } } as any, mgrUserId, [{ key: 'security.manage' }]) } catch (e: any) { delegErr = String(e) }
-  ok('admin cannot grant unheld permission', delegErr.includes('DELEGATION_DENIED'))
+  // Administrator holds every permission key (migration v26), so it may grant
+  // whatever it holds — but the reserved 'all' key can never be delegated.
+  await H['permissions:set']({ sender: { id: 3 } } as any, mgrUserId, [{ key: 'reports.view' }, { key: 'all' } as any])
+  const mgrPermsAll = await H['permissions:get'](fakeEvent, mgrUserId)
+  ok("admin cannot delegate the reserved 'all' permission", !(mgrPermsAll.grants as any[]).some((g: any) => g.permission_key === 'all'))
+  await H['permissions:set']({ sender: { id: 3 } } as any, mgrUserId, [{ key: 'reports.view' }, { key: 'security.manage' }])
+  const mgrPermsSec = await H['permissions:get'](fakeEvent, mgrUserId)
+  ok('admin can grant a permission it holds (security.manage)', (mgrPermsSec.grants as any[]).some((g: any) => g.permission_key === 'security.manage'))
+  await H['permissions:set']({ sender: { id: 3 } } as any, mgrUserId, [{ key: 'reports.view' }])
   const staffRoleId = (roles as any[]).find((r: any) => r.name === 'Collector')!.id
   await H['users:create']({ sender: { id: 3 } } as any, { username: 'col1', password: 'secret1', full_name: 'Collector One', role_id: staffRoleId })
   const mgrLogin = await H['auth:login']({ sender: { id: 2 } } as any, 'mgr1', 'secret1')
@@ -259,7 +297,12 @@ async function main() {
   ok('admin does NOT see SUPER_ADMIN role', !(rolesAdmin as any[]).some((r: any) => r.name === 'SUPER_ADMIN'))
   let roleEditErr = ''
   try { await H['roles:save']({ sender: { id: 3 } } as any, { name: 'X', permissions: ['all'] }) } catch (e: any) { roleEditErr = String(e) }
-  ok('admin cannot create/edit roles (security-only)', roleEditErr.includes('PERMISSION_DENIED'))
+  ok("admin cannot grant the reserved 'all' to a role", roleEditErr.includes('ALL_PERMISSION_RESERVED'), roleEditErr)
+  let roleSaveErr = ''
+  let tmpRoleId = 0
+  try { tmpRoleId = await H['roles:save']({ sender: { id: 3 } } as any, { name: 'Temp Role', permissions: ['customers.view'] }) as number } catch (e: any) { roleSaveErr = String(e) }
+  ok('admin can manage roles (has security permission)', !roleSaveErr && tmpRoleId > 0, roleSaveErr || tmpRoleId)
+  if (tmpRoleId) await H['roles:delete']({ sender: { id: 3 } } as any, tmpRoleId)
 
   section('SUPER_ADMIN account visibility')
   const usersSuper = await H['users:list'](fakeEvent)
@@ -273,6 +316,115 @@ async function main() {
   let delSuperErr = ''
   try { await H['users:delete']({ sender: { id: 3 } } as any, superUser.id) } catch (e: any) { delSuperErr = String(e) }
   ok('admin cannot delete SUPER_ADMIN account', delSuperErr.includes('SUPER_ADMIN_UNDELETABLE'))
+
+  section('Administrator = full permissions (migration v26)')
+  const adminRoleFull = (await H['roles:list'](fakeEvent)).find((r: any) => r.name === 'Administrator')
+  const adminPerms: string[] = JSON.parse(adminRoleFull.permissions)
+  const { PERMISSION_CATALOG, LEGACY_MODULES } = require('../src/shared/permissions')
+  const { GENERIC_ENTITY_KEYS } = require('../src/shared/entities')
+  const expectedKeys: string[] = [...PERMISSION_CATALOG.map((m: any) => m.module), ...LEGACY_MODULES, ...GENERIC_ENTITY_KEYS]
+  const missingKeys = expectedKeys.filter((k: string) => !adminPerms.includes(k))
+  ok('Administrator holds every module/entity permission', missingKeys.length === 0, missingKeys)
+  ok("Administrator still never holds the reserved 'all'", !adminPerms.includes('all'))
+  ok('Administrator has security + settings + automation + users', ['security', 'settings', 'automation', 'users'].every((k) => adminPerms.includes(k)), adminPerms)
+
+  section('Administrator can manage every account except SUPER_ADMIN')
+  // create another Administrator (previously FORBIDDEN_ROLE)
+  const adminPeerId = await H['users:create']({ sender: { id: 3 } } as any, { username: 'adminpeer', password: 'secret1', full_name: 'Admin Peer', role_id: adminRoleFull.id }) as number
+  ok('admin can create another Administrator account', adminPeerId > 0, adminPeerId)
+  // ... and assign a different role to that account
+  await H['users:update']({ sender: { id: 3 } } as any, adminPeerId, { full_name: 'Admin Peer', status: 'active', role_id: managerRoleId })
+  const peerAfter = (await H['users:list'](fakeEvent)).find((u: any) => u.id === adminPeerId)
+  ok('admin can change another account role', peerAfter?.role_name === 'Manager', peerAfter?.role_name)
+  let selfRoleErr = ''
+  try { await H['users:update']({ sender: { id: 3 } } as any, admin2Id, { full_name: 'Admin Two', status: 'active', role_id: managerRoleId }) } catch (e: any) { selfRoleErr = String(e) }
+  ok('admin cannot change their own role (no self-lockout)', selfRoleErr.includes('CANNOT_CHANGE_OWN_ROLE'), selfRoleErr)
+  const superRoleId = (db.prepare("SELECT id FROM roles WHERE name = 'SUPER_ADMIN'").get() as any).id
+  let superCreateErr = ''
+  try { await H['users:create']({ sender: { id: 3 } } as any, { username: 'hacksuper', password: 'secret1', full_name: 'Hack', role_id: superRoleId }) } catch (e: any) { superCreateErr = String(e) }
+  ok('admin cannot create a SUPER_ADMIN account', superCreateErr.includes('FORBIDDEN_ROLE'), superCreateErr)
+  let superPromoteErr = ''
+  try { await H['users:update']({ sender: { id: 3 } } as any, adminPeerId, { full_name: 'Admin Peer', status: 'active', role_id: superRoleId }) } catch (e: any) { superPromoteErr = String(e) }
+  ok('admin cannot promote anyone to SUPER_ADMIN', superPromoteErr.includes('FORBIDDEN_ROLE'), superPromoteErr)
+  // delete another Administrator (previously PERMISSION_DENIED)
+  const delPeer = await H['users:delete']({ sender: { id: 3 } } as any, adminPeerId)
+  ok('admin can delete another Administrator account', delPeer === true, delPeer)
+  // Administrator holds the 'settings' module (migration v26) -> system settings save works
+  const lateFeeBefore = getSetting('late_fee', '0')
+  let sysErr2 = ''
+  try { await H['settings:set']({ sender: { id: 3 } } as any, 'late_fee', lateFeeBefore) } catch (e: any) { sysErr2 = String(e) }
+  ok('admin can change system settings (full permissions)', sysErr2 === '', sysErr2)
+
+  section('Super Admin — user management + secure Login As User (impersonation)')
+  const umSuper = await H['impersonation:users'](fakeEvent, { page: 1, pageSize: 50 })
+  ok('super sees the merged user directory (local accounts always included)', (umSuper.rows as any[]).length >= 3 && (umSuper.rows as any[]).some((r) => r.source === 'local'), { rows: (umSuper.rows as any[]).length })
+  const mgrRow = (umSuper.rows as any[]).find((r) => r.username === 'mgr1')
+  ok('directory row has username/role/status/created date', !!mgrRow && mgrRow.role_name === 'Manager' && !!mgrRow.status && !!mgrRow.created_at, mgrRow)
+  ok('active Manager can be impersonated', !!mgrRow && mgrRow.can_login_as === true, mgrRow?.block_reason)
+  ok('filter counters returned with the directory', umSuper.statusCounts?.all === umSuper.total, { counts: umSuper.statusCounts, total: umSuper.total })
+  const superRow = (umSuper.rows as any[]).find((r) => r.role_name === 'SUPER_ADMIN')
+  ok('SUPER_ADMIN row is never impersonable', !!superRow && superRow.can_login_as === false && superRow.block_reason === 'SUPER_ADMIN', superRow)
+  const umSearch = await H['impersonation:users'](fakeEvent, { search: 'mgr1', page: 1, pageSize: 20 })
+  ok('directory search works', (umSearch.rows as any[]).length === 1 && (umSearch.rows as any[])[0].username === 'mgr1', umSearch.total)
+  const umPage = await H['impersonation:users'](fakeEvent, { page: 2, pageSize: 5 })
+  ok('directory pagination works', umPage.page === 2 && umPage.pageSize === 5 && (umPage.rows as any[]).length <= 5, { page: umPage.page, rows: (umPage.rows as any[]).length })
+  let umAdminErr = ''
+  try { await H['impersonation:users']({ sender: { id: 3 } } as any, {}) } catch (e: any) { umAdminErr = String(e) }
+  ok('Administrator cannot use super-admin user management', umAdminErr.includes('PERMISSION_DENIED:impersonation'), umAdminErr)
+
+  const mgrHashBefore = (db.prepare('SELECT password_hash FROM users WHERE id = ?').get(mgrUserId) as any).password_hash
+  await H['impersonation:start'](fakeEvent, mgrUserId)
+  const impCheck = await H['auth:check'](fakeEvent)
+  ok('impersonated session acts as the target user', impCheck.user?.username === 'mgr1' && impCheck.user?.roleName === 'Manager', impCheck.user?.username)
+  ok('session remembers the originating super admin', impCheck.user?.impersonatedBy === 1 && impCheck.user?.impersonatedByName === 'admin', impCheck.user?.impersonatedByName)
+  const impStatus = await H['impersonation:status'](fakeEvent)
+  ok('impersonation status reports the active target', impStatus.active === true && impStatus.target?.username === 'mgr1', impStatus)
+  let impPwErr = ''
+  try { await H['auth:changePassword'](fakeEvent, 'x', 'newpass123') } catch (e: any) { impPwErr = String(e) }
+  ok('password change blocked while impersonating', impPwErr.includes('IMPERSONATION_BLOCKED'), impPwErr)
+  let impNestErr = ''
+  try { await H['impersonation:start'](fakeEvent, admin2Id) } catch (e: any) { impNestErr = String(e) }
+  ok('nested impersonation blocked', impNestErr.includes('IMPERSONATION_ALREADY_ACTIVE'), impNestErr)
+  const mgrHashDuring = (db.prepare('SELECT password_hash FROM users WHERE id = ?').get(mgrUserId) as any).password_hash
+  ok('target credentials never touched', mgrHashDuring === mgrHashBefore)
+  const auditDuring = db.prepare('SELECT * FROM impersonation_logs ORDER BY id DESC LIMIT 1').get() as any
+  ok('audit row recorded on start', auditDuring?.super_admin_username === 'admin' && auditDuring?.target_username === 'mgr1' && !auditDuring?.ended_at, auditDuring)
+  const back = await H['impersonation:stop'](fakeEvent)
+  ok('Return to Super Admin restores the real session', back.user?.username === 'admin' && back.user?.permissions?.includes('all') && !back.user?.impersonatedBy, back.user?.username)
+  const auditClosed = db.prepare('SELECT * FROM impersonation_logs ORDER BY id DESC LIMIT 1').get() as any
+  ok('audit row closed with duration on return', !!auditClosed?.ended_at && auditClosed.end_reason === 'returned' && auditClosed.duration_seconds !== null, auditClosed)
+  const mgrRelogin = await H['auth:login']({ sender: { id: 6 } } as any, 'mgr1', 'secret1')
+  ok('target can still log in with the original password', mgrRelogin.user?.username === 'mgr1', mgrRelogin.user?.username)
+  let selfImpErr = ''
+  try { await H['impersonation:start'](fakeEvent, 1) } catch (e: any) { selfImpErr = String(e) }
+  ok('super admin cannot impersonate itself', selfImpErr.includes('CANNOT_IMPERSONATE_SELF'), selfImpErr)
+  const superIdForImp = (db.prepare("SELECT id FROM users WHERE username = 'admin'").get() as any).id
+  let superImpErr = ''
+  try { await H['impersonation:start'](fakeEvent, superIdForImp) } catch (e: any) { superImpErr = String(e) }
+  ok('no SUPER_ADMIN account can be impersonated', superImpErr.includes('CANNOT_IMPERSONATE_SELF') || superImpErr.includes('CANNOT_IMPERSONATE_SUPER_ADMIN'), superImpErr)
+  let adminImpErr = ''
+  try { await H['impersonation:start']({ sender: { id: 3 } } as any, mgrUserId) } catch (e: any) { adminImpErr = String(e) }
+  ok('Administrator cannot impersonate anyone', adminImpErr.includes('PERMISSION_DENIED:impersonation'), adminImpErr)
+
+  // an impersonated ADMINISTRATOR (the strongest non-super role) must still be
+  // refused credential/account/role/backup writes — the explicit guard fires
+  await H['impersonation:start'](fakeEvent, admin2Id)
+  let impAdminUserErr = ''
+  try { await H['users:update'](fakeEvent, mgrUserId, { full_name: 'Hacked', status: 'active' }) } catch (e: any) { impAdminUserErr = String(e) }
+  ok('admin-level impersonation: user edits still blocked', impAdminUserErr.includes('IMPERSONATION_BLOCKED'), impAdminUserErr)
+  let impAdminRoleErr = ''
+  try { await H['roles:save'](fakeEvent, { name: 'X1', permissions: ['dashboard'] }) } catch (e: any) { impAdminRoleErr = String(e) }
+  ok('admin-level impersonation: role edits still blocked', impAdminRoleErr.includes('IMPERSONATION_BLOCKED'), impAdminRoleErr)
+  let impAdminPermErr = ''
+  try { await H['permissions:set'](fakeEvent, mgrUserId, [{ key: 'all' }]) } catch (e: any) { impAdminPermErr = String(e) }
+  ok('admin-level impersonation: permission writes still blocked', impAdminPermErr.includes('IMPERSONATION_BLOCKED'), impAdminPermErr)
+  let impAdminBackupErr = ''
+  try { await H['backup:restore'](fakeEvent) } catch (e: any) { impAdminBackupErr = String(e) }
+  ok('admin-level impersonation: backup restore blocked', impAdminBackupErr.includes('IMPERSONATION_BLOCKED'), impAdminBackupErr)
+  const backAdmin = await H['impersonation:stop'](fakeEvent)
+  ok('second return to super admin works', backAdmin.user?.username === 'admin' && backAdmin.user?.permissions?.includes('all'), backAdmin.user?.username)
+  const mgrUnchanged = (db.prepare('SELECT full_name FROM users WHERE id = ?').get(mgrUserId) as any).full_name
+  ok('blocked edits changed nothing', mgrUnchanged === 'Manager One', mgrUnchanged)
 
   section('collector ownership + dropdown')
   // admin2 (sender 3) creates two collectors via quick-add
@@ -290,6 +442,62 @@ async function main() {
   await H['db:update']({ sender: { id: 3 } } as any, 'collectors', colB.id, { status: 'inactive' })
   const listA2 = await H['db:reflist']({ sender: { id: 3 } } as any, 'collectors')
   ok('deactivated collector hidden from dropdown', !listA2.some((c: any) => c.label.includes('Karim')) && listA2.some((c: any) => c.label.includes('Rahim')))
+
+  section('collector identity — auto selection + server-side ownership')
+  const colC = await H['collectors:quickAdd']({ sender: { id: 3 } } as any, 'Jasim', '01933333333')
+  // Collector account whose full name matches collector A's Staff name (legacy fallback)
+  const rahimUserId = await H['users:create']({ sender: { id: 3 } } as any, { username: 'rahimcol', password: 'secret1', full_name: 'Rahim', role_id: staffRoleId }) as number
+  await H['customers:setCollector'](fakeEvent, [c1], colA.id)
+  await H['auth:login']({ sender: { id: 20 } } as any, 'rahimcol', 'secret1')
+  const myA = await H['payments:myCollector']({ sender: { id: 20 } } as any)
+  ok('collector auto-selects own collector profile', myA.locked === true && myA.collector?.id === colA.id && myA.collector?.label === 'Rahim', myA)
+  const rahimCustomers = await H['customers:list']({ sender: { id: 20 } } as any, { all: true })
+  ok('collector sees only explicitly assigned or area-assigned customers',
+    (rahimCustomers.rows as any[]).some((r) => r.id === c1) && !(rahimCustomers.rows as any[]).some((r) => r.id === c2), rahimCustomers.rows.map((r: any) => r.id))
+  // spoofed collector id in the request is ignored server-side
+  const paySpoof = await H['payments:collect']({ sender: { id: 20 } } as any, { customerId: c1, amount: 77, method: 'cash', type: 'bill', collectorId: colC.id })
+  const spoofRow = (await H['payments:list']({ sender: { id: 20 } } as any, { search: paySpoof.receiptNo })).rows[0]
+  ok('collector cannot submit under another collector (server overrides id)', spoofRow?.collector_id === colA.id && spoofRow?._collector === 'Rahim', spoofRow)
+  let unassignedErr = ''
+  try { await H['payments:collect']({ sender: { id: 20 } } as any, { customerId: c2, amount: 5, method: 'cash', type: 'bill' }) } catch (e: any) { unassignedErr = String(e) }
+  ok('collector cannot collect from an unassigned customer', unassignedErr.includes('CUSTOMER_NOT_ASSIGNED_TO_COLLECTOR'), unassignedErr)
+  // Admin with the same name must NOT be locked (regression: name match used to lock admins)
+  const adminRahimId = await H['users:create'](fakeEvent, { username: 'adminrahim', password: 'secret1', full_name: 'Rahim', role_id: adminRoleId }) as number
+  await H['auth:login']({ sender: { id: 21 } } as any, 'adminrahim', 'secret1')
+  const myAdmin = await H['payments:myCollector']({ sender: { id: 21 } } as any)
+  ok('admin keeps manual collector selection (not locked)', myAdmin.locked === false, myAdmin)
+  const payAdmin = await H['payments:collect']({ sender: { id: 21 } } as any, { customerId: c1, amount: 11, method: 'cash', type: 'bill', collectorId: colC.id })
+  const adminRow = (await H['payments:list']({ sender: { id: 21 } } as any, { search: payAdmin.receiptNo })).rows[0]
+  ok('admin can assign payment to any active collector', adminRow?.collector_id === colC.id && adminRow?._collector === 'Jasim', adminRow)
+  // inactive linked profile blocks collection entirely
+  const inactiveUserId = await H['users:create']({ sender: { id: 3 } } as any, { username: 'colinactive', password: 'secret1', full_name: 'Inactive Person', role_id: staffRoleId }) as number
+  await H['users:linkCollector'](fakeEvent, inactiveUserId, colB.id)
+  await H['auth:login']({ sender: { id: 22 } } as any, 'colinactive', 'secret1')
+  const myInactive = await H['payments:myCollector']({ sender: { id: 22 } } as any)
+  ok('inactive linked collector is locked + flagged', myInactive.locked === true && myInactive.error === 'COLLECTOR_INACTIVE', myInactive)
+  let inactiveErr = ''
+  try { await H['payments:collect']({ sender: { id: 22 } } as any, { customerId: c1, amount: 5, method: 'cash', type: 'bill' }) } catch (e: any) { inactiveErr = String(e) }
+  ok('inactive collector cannot collect', inactiveErr.includes('COLLECTOR_INACTIVE'), inactiveErr)
+  // Collector role without any profile: locked, never falls back to the manual list
+  await H['users:create']({ sender: { id: 3 } } as any, { username: 'colnoprofile', password: 'secret1', full_name: 'No Profile', role_id: staffRoleId })
+  await H['auth:login']({ sender: { id: 23 } } as any, 'colnoprofile', 'secret1')
+  const myNone = await H['payments:myCollector']({ sender: { id: 23 } } as any)
+  ok('collector without profile is locked (no manual fallback)', myNone.locked === true && myNone.error === 'NO_COLLECTOR_PROFILE', myNone)
+  // explicit link (Security → Users) wins even when the names differ
+  const linkedUserId = await H['users:create']({ sender: { id: 3 } } as any, { username: 'collinked', password: 'secret1', full_name: 'Different Name', role_id: staffRoleId }) as number
+  await H['users:linkCollector'](fakeEvent, linkedUserId, colC.id)
+  await H['auth:login']({ sender: { id: 24 } } as any, 'collinked', 'secret1')
+  const myLinked = await H['payments:myCollector']({ sender: { id: 24 } } as any)
+  ok('explicit user↔collector link wins over name matching', myLinked.locked === true && myLinked.collector?.id === colC.id, myLinked)
+  // payment-scoped dropdown lists every active collector (admin), never inactive ones
+  const payCols = await H['payments:collectors']({ sender: { id: 3 } } as any)
+  ok('payment dropdown lists all active collectors only', payCols.some((c: any) => c.id === colA.id) && payCols.some((c: any) => c.id === colC.id) && !payCols.some((c: any) => c.id === colB.id), payCols)
+  // collector-wise report totals match the saved payments
+  const rahimPays = await H['payments:list']({ sender: { id: 3 } } as any, { all: true, collectorId: colA.id })
+  const rahimSum = (rahimPays.rows as any[]).filter((p) => p.type !== 'refund').reduce((s, p) => s + Number(p.amount), 0)
+  const collectorReport = await H['reports:collector']({ sender: { id: 3 } } as any, '2000-01-01', '2099-12-31')
+  const rahimReport = (collectorReport as any[]).find((r) => r.collector === 'Rahim')
+  ok('collector-wise report totals match payment history', !!rahimReport && Math.abs(Number(rahimReport.collected) - rahimSum) < 0.01, { report: rahimReport?.collected, history: rahimSum })
 
   section('purchase form v2 (manual product, auto timestamp)')
   const p1 = await H['products:findOrCreate'](fakeEvent, { name: 'Coaxial Cable 100m', salePrice: 2500 })
@@ -384,10 +592,15 @@ async function main() {
   ok('manager cannot edit company profile', cpErr.includes('PERMISSION_DENIED'))
   const prof2 = await H['settings:companyProfile']({ sender: { id: 4 } } as any)
   ok('manager can view company profile', prof2.company_name === 'AVA Cable Network')
-  // legacy settings:setMany for company keys by admin also allowed, non-company keys denied
+  // legacy settings:set — Administrator now holds the 'settings' module (migration
+  // v26), so system settings save works for it (manager/collector stay denied).
+  const lateFeeBefore2 = getSetting('late_fee', '0')
   let sysErr = ''
-  try { await H['settings:set']({ sender: { id: 3 } } as any, 'late_fee', '99') } catch (e: any) { sysErr = String(e) }
-  ok('admin cannot change system settings', sysErr.includes('PERMISSION_DENIED'))
+  try { await H['settings:set']({ sender: { id: 3 } } as any, 'late_fee', lateFeeBefore2) } catch (e: any) { sysErr = String(e) }
+  ok('admin can change system settings (settings module granted)', sysErr === '', sysErr)
+  let mgrSysErr = ''
+  try { await H['settings:set']({ sender: { id: 2 } } as any, 'late_fee', '99') } catch (e: any) { mgrSysErr = String(e) }
+  ok('manager cannot change system settings', mgrSysErr.includes('PERMISSION_DENIED'), mgrSysErr)
 
   section('excel customer import')
   const imp = await H['customers:import'](fakeEvent, [
@@ -461,6 +674,15 @@ async function main() {
   await H['roles:save'](fakeEvent, { id: adminRole2.id, name: 'Administrator', permissions: ['areas.view'] })
   const admin3Check = await H['auth:check']({ sender: { id: 4 } } as any)
   ok('live session refreshed after role change (no logout/login)', (admin3Check.user.permissions as string[]).includes('areas.view') && !(admin3Check.user.permissions as string[]).includes('areas'))
+  // role identity itself (not just permissions) must refresh live — otherwise a
+  // promoted account keeps rendering the Collector dashboard after role change
+  const collectorRoleForRefresh = (await H['roles:list'](fakeEvent) as any[]).find((r) => r.name === 'Collector')!
+  await H['users:update'](fakeEvent, admin3Id, { full_name: 'Admin Three', status: 'active', role_id: collectorRoleForRefresh.id })
+  const demotedCheck = await H['auth:check']({ sender: { id: 4 } } as any)
+  ok('live session roleName follows role change (Collector)', demotedCheck.user.roleName === 'Collector', demotedCheck.user.roleName)
+  await H['users:update'](fakeEvent, admin3Id, { full_name: 'Admin Three', status: 'active', role_id: adminRole2.id })
+  const promotedCheck = await H['auth:check']({ sender: { id: 4 } } as any)
+  ok('promoted account immediately reports Administrator role', promotedCheck.user.roleName === 'Administrator', promotedCheck.user.roleName)
   const admin3List2 = await H['db:list']({ sender: { id: 4 } } as any, 'areas', {})
   ok('view-only admin can still VIEW', admin3List2.total >= 1)
   let admin3SaveErr = ''
@@ -656,6 +878,579 @@ async function main() {
   db.exec(MIGRATIONS[v17Idx]) // idempotency: same entry again
   const afterFix2 = JSON.parse(((await H['roles:list'](fakeEvent)).find((r: any) => r.id === adminRole.id) as any).permissions)
   ok('migration v17 is idempotent (no duplicates)', afterFix2.filter((k: string) => k === 'company_profile').length === 1, afterFix2)
+
+  // ==== migration v25: the reserved 'all' permission is SUPER_ADMIN-only ====
+  section("migration v25 - reserved 'all' permission cleanup")
+  const mgrRole = (await H['roles:list'](fakeEvent)).find((r: any) => r.name === 'Manager')
+  const mgrUser = (await H['users:list'](fakeEvent)).find((u: any) => u.username === 'mgr1')
+  // simulate legacy/corrupted data: a non-super role holding 'all'
+  db.prepare('UPDATE roles SET permissions = ? WHERE id = ?').run(JSON.stringify(['dashboard', 'all', 'users']), mgrRole.id)
+  const v25Idx = MIGRATIONS.findIndex((m: string) => m.includes('Version 25: SECURITY FIX'))
+  ok('migration v25 exists', v25Idx >= 0, { count: MIGRATIONS.length })
+  db.exec(MIGRATIONS[v25Idx])
+  const mgrAfter = JSON.parse(((await H['roles:list'](fakeEvent)).find((r: any) => r.id === mgrRole.id) as any).permissions)
+  ok("manager role keeps real keys but loses 'all'", !mgrAfter.includes('all') && mgrAfter.includes('dashboard') && mgrAfter.includes('users'), mgrAfter)
+  const superAfter = JSON.parse(((await H['roles:list'](fakeEvent)).find((r: any) => r.name === 'SUPER_ADMIN') as any).permissions)
+  ok("SUPER_ADMIN keeps 'all'", superAfter.includes('all'), superAfter)
+  // runtime guard: even bad data written AFTER the migration never grants super powers
+  db.prepare('UPDATE roles SET permissions = ? WHERE id = ?').run(JSON.stringify(['all']), mgrRole.id)
+  const { getEffectivePermissions } = require('../src/main/ipc/auth')
+  ok("runtime guard: Manager never inherits 'all'", !getEffectivePermissions(mgrUser.id).includes('all'), getEffectivePermissions(mgrUser.id))
+  db.exec(MIGRATIONS[v25Idx]) // idempotency: run again on cleaned/legacy data
+  const mgrIdem = JSON.parse((db.prepare('SELECT permissions FROM roles WHERE id = ?').get(mgrRole.id) as any).permissions)
+  ok('migration v25 is idempotent', Array.isArray(mgrIdem) && !mgrIdem.includes('all'), mgrIdem)
+
+  // ==== customer ↔ collector assignment (filter bug + inline/create assignment) ====
+  section('customers — collector assignment (filter, inline, create form)')
+  // area scope: colA covers the Mirpur area → its unassigned customers are in scope
+  await H['collector:assignAreas'](fakeEvent, colA.id, [areaId])
+  const fArea = await H['customers:list'](fakeEvent, { page: 1, pageSize: 50, areaId, collectorId: colA.id })
+  ok('collector filter includes area-scoped customers (was showing none)', fArea.total > 0 && (fArea.rows as any[]).every((r) => Number(r.area_id) === Number(areaId)), fArea.total)
+  const otherArea = await H['db:create'](fakeEvent, 'areas', { name: 'Bogura', status: 'active' })
+  const fOther = await H['customers:list'](fakeEvent, { page: 1, pageSize: 50, areaId: otherArea, collectorId: colA.id })
+  ok('collector filter respects the area scope', fOther.total === 0, fOther.total)
+  // explicit assignment from the New Connection form
+  const cAssign = await H['customers:create'](fakeEvent, { name: 'Assign Me', mobile: '01799900011', area_id: areaId, collector_id: colA.id })
+  const cAssigned = (await H['customers:get'](fakeEvent, cAssign)).customer
+  ok('customer created with a collector is assigned', Number(cAssigned.collector_id) === Number(colA.id), cAssigned.collector_id)
+  const fExplicit = await H['customers:list'](fakeEvent, { page: 1, pageSize: 50, areaId, collectorId: colA.id })
+  ok('explicitly assigned customer appears in the collector filter', (fExplicit.rows as any[]).some((r) => r.id === cAssign))
+  // inline change → another ACTIVE collector (colB is deactivated earlier)
+  await H['customers:setCollector'](fakeEvent, [cAssign], colC.id)
+  ok('inline assignment switches the collector', Number((await H['customers:get'](fakeEvent, cAssign)).customer.collector_id) === Number(colC.id))
+  // form update → clear assignment
+  await H['customers:update'](fakeEvent, cAssign, { collector_id: null })
+  ok('customer form can clear the collector', !(await H['customers:get'](fakeEvent, cAssign)).customer.collector_id)
+  let badColErr = ''
+  try { await H['customers:create'](fakeEvent, { name: 'Bad Coll', mobile: '01799900012', area_id: areaId, collector_id: 999999 }) } catch (e: any) { badColErr = String(e) }
+  ok('unknown collector rejected on create', badColErr.includes('COLLECTOR_NOT_FOUND'), badColErr)
+  // a collector account can never assign somebody else through the form
+  await H['auth:login']({ sender: { id: 7 } } as any, 'col1', 'secret1')
+  const colMade = await H['customers:create']({ sender: { id: 7 } } as any, { name: 'By Collector', mobile: '01799900013', area_id: areaId, collector_id: colA.id })
+  ok('collector account cannot assign a collector from the form', !(await H['customers:get'](fakeEvent, colMade)).customer.collector_id)
+
+  // ==== login diagnostics + Supabase directory / local-account provisioning ====
+  section('login diagnostics (why a sign-in fails)')
+  const pendingUser = await H['users:create'](fakeEvent, { username: 'pend1', password: 'secret1', full_name: 'Pending One', role_id: staffRoleId }) as number
+  db.prepare("UPDATE users SET status = 'pending' WHERE id = ?").run(pendingUser)
+  let pendingErr = ''
+  try { await H['auth:login']({ sender: { id: 8 } } as any, 'pend1', 'secret1') } catch (e: any) { pendingErr = String(e) }
+  ok('pending account gets ACCOUNT_PENDING (not a blanket error)', pendingErr.includes('ACCOUNT_PENDING'), pendingErr)
+  const helpUnknown = await H['auth:loginHelp'](null as any, 'no-such-user')
+  ok('loginHelp reports a missing account', helpUnknown.local === null && helpUnknown.suggestion === null, helpUnknown)
+  ok('loginHelp never returns credentials', !('password' in helpUnknown) && !('password_hash' in helpUnknown) && !('reset_hash' in helpUnknown), Object.keys(helpUnknown))
+  // typing the full name instead of the username: suggest the real username
+  db.prepare('UPDATE users SET full_name = ? WHERE id = ?').run('বিনোদন কাবল নেটওয়ার্ক', mgrUserId)
+  const helpByName = await H['auth:loginHelp'](null as any, 'বিনোদন কাবল নেটওয়ার্ক')
+  ok('loginHelp suggests the username when a full name is typed', helpByName.suggestion === 'mgr1', helpByName.suggestion)
+  // regression: when the typed text IS the username (and also the full name),
+  // no useless "try that" hint — the real reason is the password
+  await H['users:create'](fakeEvent, { username: 'nameonly', password: 'secret1', full_name: 'nameonly', role_id: staffRoleId })
+  const helpExact = await H['auth:loginHelp'](null as any, 'nameonly')
+  ok('no suggestion when the typed text is already the username', helpExact.suggestion === null && helpExact.local?.status === 'active', helpExact)
+
+  section('Supabase directory + create the missing local account')
+  // stub only the Supabase anon REST calls (the app calls global fetch in main)
+  const realFetch = (global as any).fetch
+  const rpcOk = (rows: any[]) => ({ ok: true, status: 200, json: async () => rows })
+  ;(global as any).fetch = async (url: any) => {
+    const u = String(url)
+    if (u.includes('get_app_users_v2')) return rpcOk([
+      { username: 'remoteuser', full_name: 'বিনোদন কাবল নেটওয়ার্ক', mobile: '01711112222', email: 'b@example.com', status: 'approved', role_name: 'Administrator', created_at: '2026-01-02T03:04:05Z', approved_at: '2026-01-03T00:00:00Z' },
+      { username: 'remotePend', full_name: 'Remote Pending', mobile: '01711113333', email: null, status: 'pending', role_name: null, created_at: '2026-01-04T00:00:00Z', approved_at: null }
+    ])
+    return rpcOk([])
+  }
+  const umRemote = await H['impersonation:users'](fakeEvent, { page: 1, pageSize: 50 })
+  const remoteRowUm = (umRemote.rows as any[]).find((r) => r.username === 'remoteuser')
+  ok('Supabase users appear in the directory with email', !!remoteRowUm && remoteRowUm.email === 'b@example.com' && remoteRowUm.source === 'supabase', remoteRowUm)
+  ok('email supported flag set when get_app_users_v2 exists', umRemote.emailSupported === true)
+  ok('approved Supabase user without a local account cannot be impersonated yet', remoteRowUm.can_login_as === false && remoteRowUm.block_reason === 'NO_LOCAL_ACCOUNT', remoteRowUm?.block_reason)
+  const umRemotePending = await H['impersonation:users'](fakeEvent, { search: 'remotePend', page: 1, pageSize: 20 })
+  ok('status filter/search works on remote rows', (umRemotePending.rows as any[]).length === 1 && (umRemotePending.rows as any[])[0].status === 'pending', umRemotePending.total)
+  let createLocalAdminErr = ''
+  try { await H['accounts:createLocal']({ sender: { id: 3 } } as any, { username: 'remoteuser' }) } catch (e: any) { createLocalAdminErr = String(e) }
+  ok('only a SUPER_ADMIN can create the local account', createLocalAdminErr.includes('PERMISSION_DENIED'), createLocalAdminErr)
+  let createLocalPendErr = ''
+  try { await H['accounts:createLocal'](fakeEvent, { username: 'remotePend' }) } catch (e: any) { createLocalPendErr = String(e) }
+  ok('not-approved Supabase user cannot be provisioned', createLocalPendErr.includes('REMOTE_NOT_APPROVED'), createLocalPendErr)
+  const made = await H['accounts:createLocal'](fakeEvent, { username: 'remoteuser' })
+  ok('local account created from the approved Supabase user', !!made.tempPassword && made.tempPassword.length >= 6, { username: made.username })
+  const madeRow = (await H['users:list'](fakeEvent)).find((u: any) => u.username === 'remoteuser')
+  ok('provisioned account gets the Supabase role + active status', madeRow?.role_name === 'Administrator' && madeRow?.status === 'active', madeRow)
+  const madeLogin = await H['auth:login']({ sender: { id: 9 } } as any, 'remoteuser', made.tempPassword)
+  ok('user can sign in with the temporary password', madeLogin.user?.username === 'remoteuser')
+  await H['auth:logout']({ sender: { id: 9 } } as any)
+  const umAfterProvision = await H['impersonation:users'](fakeEvent, { search: 'remoteuser', page: 1, pageSize: 20 })
+  ok('provisioned user becomes impersonable', (umAfterProvision.rows as any[])[0]?.can_login_as === true, (umAfterProvision.rows as any[])[0]?.block_reason)
+  ;(global as any).fetch = realFetch
+
+  section('every approved Supabase account can be used on this installation')
+  const bcryptLib = require('bcryptjs')
+  const resetHash = bcryptLib.hashSync('resetPass1', 10)
+  const dirRows = [
+    { username: 'provisionme', full_name: 'Provision Me', mobile: '01722223333', email: null, status: 'approved', role_name: 'Manager', created_at: '2026-02-01T00:00:00Z', approved_at: '2026-02-02T00:00:00Z' },
+    { username: 'withreset', full_name: 'With Reset', mobile: '01722224444', email: null, status: 'approved', role_name: 'Collector', created_at: '2026-02-03T00:00:00Z', approved_at: '2026-02-04T00:00:00Z' },
+    { username: 'notapproved', full_name: 'Not Approved', mobile: '01722225555', email: null, status: 'pending', role_name: null, created_at: '2026-02-05T00:00:00Z', approved_at: null }
+  ]
+  const statusRows = [
+    { username: 'provisionme', status: 'approved', reset_hash: null, role_name: 'Manager' },
+    { username: 'withreset', status: 'approved', reset_hash: resetHash, role_name: 'Collector' },
+    { username: 'notapproved', status: 'pending', reset_hash: null, role_name: null }
+  ]
+  const stubSupabase = (dir: any[]) => {
+    ;(global as any).fetch = async (url: any) => {
+      const u = String(url)
+      const ok = (rows: any[]) => ({ ok: true, status: 200, json: async () => rows })
+      if (u.includes('get_app_users_v2')) return ok(dir)
+      if (u.includes('get_app_user_status')) return ok(statusRows)
+      return ok([])
+    }
+  }
+  stubSupabase(dirRows)
+  let syncAllAdminErr = ''
+  try { await H['accounts:syncAllRemote']({ sender: { id: 3 } } as any) } catch (e: any) { syncAllAdminErr = String(e) }
+  ok('only a SUPER_ADMIN can sync every Supabase account', syncAllAdminErr.includes('PERMISSION_DENIED'), syncAllAdminErr)
+  const sync1 = await H['accounts:syncAllRemote'](fakeEvent)
+  ok('sync provisions approved Supabase users only', (sync1.provisioned as string[]).includes('provisionme') && (sync1.provisioned as string[]).includes('withreset') && !(sync1.provisioned as string[]).includes('notapproved'), sync1)
+  const provRow = (await H['users:list'](fakeEvent)).find((u: any) => u.username === 'provisionme')
+  ok('provisioned account keeps the Supabase role', provRow?.role_name === 'Manager' && provRow?.status === 'active', provRow)
+  const resetLogin = await H['auth:login']({ sender: { id: 10 } } as any, 'withreset', 'resetPass1')
+  ok('developer-set reset password can sign in', resetLogin.user?.username === 'withreset')
+  await H['auth:logout']({ sender: { id: 10 } } as any)
+  let guessErr = ''
+  try { await H['auth:login']({ sender: { id: 11 } } as any, 'provisionme', 'secret1') } catch (e: any) { guessErr = String(e) }
+  ok('account without a reset password cannot be guessed in', guessErr.includes('INVALID_CREDENTIALS'), guessErr)
+  const umProv = await H['impersonation:users'](fakeEvent, { search: 'provisionme', page: 1, pageSize: 20 })
+  ok('provisioned account is impersonable (Login As User) without its password', (umProv.rows as any[])[0]?.can_login_as === true, (umProv.rows as any[])[0]?.block_reason)
+  // auto-sync mode: a newly approved Supabase user is provisioned by the poll
+  await H['settings:set'](fakeEvent, 'supabase_auto_provision', '1')
+  stubSupabase([...dirRows, { username: 'autonew', full_name: 'Auto New', mobile: '01722226666', email: null, status: 'approved', role_name: 'Collector', created_at: '2026-02-06T00:00:00Z', approved_at: '2026-02-07T00:00:00Z' }])
+  const autoRun = await H['accounts:checkRemote'](fakeEvent)
+  ok('auto-sync provisions a newly approved user on the next poll', (autoRun.provisioned as string[]).includes('autonew'), autoRun.provisioned)
+  ok('auto-synced account exists and is active', (await H['users:list'](fakeEvent)).some((u: any) => u.username === 'autonew' && u.status === 'active'))
+  await H['settings:set'](fakeEvent, 'supabase_auto_provision', '0')
+  ;(global as any).fetch = realFetch
+
+  section('account switching — per-account DATA isolation (workspaces)')
+  // the super admin's own data lives in the installation database
+  const superCustomer = await H['customers:create'](fakeEvent, { name: 'Super Only', mobile: '01755550001', area_id: areaId })
+  const mgrBId = await H['users:create'](fakeEvent, { username: 'mgrb', password: 'secret1', full_name: 'Manager B', role_id: managerRoleId }) as number
+
+  // installation-level settings (subscription/security) live in the primary DB
+  await H['settings:set'](fakeEvent, 'session_timeout_min', '480')
+
+  // ---- switch into account A (mgr1) ----
+  await H['impersonation:start'](fakeEvent, mgrUserId)
+  const listA0 = await H['customers:list'](fakeEvent, { page: 1, pageSize: 50 })
+  ok('A workspace starts empty — super admin data is not visible', listA0.total === 0, listA0.total)
+  const custA = await H['customers:create'](fakeEvent, { name: 'Customer A', mobile: '01755550002' })
+  ok('A can create data in its own workspace', custA > 0)
+  const listA1 = await H['customers:list'](fakeEvent, { page: 1, pageSize: 50 })
+  ok('A sees exactly its own customer', listA1.total === 1 && (listA1.rows as any[])[0].name === 'Customer A', listA1.total)
+  const wsSettings = await H['settings:getAll'](fakeEvent)
+  ok('installation settings (subscription/security) stay visible inside a workspace', wsSettings.session_timeout_min === '480', wsSettings.session_timeout_min)
+
+  // ---- back to the super admin ----
+  await H['impersonation:stop'](fakeEvent)
+  const superList = await H['customers:list'](fakeEvent, { page: 1, pageSize: 50, search: 'Super Only' })
+  ok('returning reloads the super admin own data', (superList.rows as any[]).some((r) => r.id === superCustomer), superList.total)
+  const superSeesA = await H['customers:list'](fakeEvent, { page: 1, pageSize: 50, search: 'Customer A' })
+  ok("A's data never leaks into the super admin database", superSeesA.total === 0, superSeesA.total)
+
+  // ---- switch into account B ----
+  await H['impersonation:start'](fakeEvent, mgrBId)
+  const listB0 = await H['customers:list'](fakeEvent, { page: 1, pageSize: 50 })
+  ok("B's workspace has neither A's data nor the super admin's", listB0.total === 0, listB0.total)
+  await H['customers:create'](fakeEvent, { name: 'Customer B', mobile: '01755550003' })
+  const listB1 = await H['customers:list'](fakeEvent, { page: 1, pageSize: 50 })
+  ok('B sees exactly its own customer', listB1.total === 1 && (listB1.rows as any[])[0].name === 'Customer B', listB1.total)
+
+  // ---- back to A: isolation survives repeated switching ----
+  await H['impersonation:stop'](fakeEvent)
+  await H['impersonation:start'](fakeEvent, mgrUserId)
+  const listAAgain = await H['customers:list'](fakeEvent, { page: 1, pageSize: 50 })
+  ok('switching back to A shows only A data (persisted)', listAAgain.total === 1 && (listAAgain.rows as any[])[0].name === 'Customer A', listAAgain.total)
+  ok('each account has its own database file', fs.existsSync(path.join(userData, 'workspaces')) && fs.readdirSync(path.join(userData, 'workspaces')).length >= 2, fs.existsSync(path.join(userData, 'workspaces')) ? fs.readdirSync(path.join(userData, 'workspaces')) : [])
+
+  // ---- logout while impersonating must restore the installation database ----
+  await H['auth:logout'](fakeEvent)
+  await H['auth:login'](fakeEvent, 'admin', 'admin123')
+  const superList2 = await H['customers:list'](fakeEvent, { page: 1, pageSize: 50, search: 'Super Only' })
+  ok('logout during impersonation returns to the super admin data', (superList2.rows as any[]).some((r) => r.id === superCustomer), superList2.total)
+  const auditRowsWS = db.prepare('SELECT * FROM impersonation_logs ORDER BY id DESC LIMIT 6').all() as any[]
+  ok('every switch is audited (start + closed row)', auditRowsWS.filter((a) => a.ended_at).length >= 3, auditRowsWS.length)
+
+  // ---- renderer refresh (auth:check) must keep the target's workspace ----
+  await H['impersonation:start'](fakeEvent, mgrUserId)
+  await H['customers:create'](fakeEvent, { name: 'Survives Refresh', mobile: '01755550010' })
+  const refreshed = await H['auth:check'](fakeEvent)
+  ok('refresh keeps the impersonated identity', refreshed.user?.username === 'mgr1' && refreshed.user?.impersonatedBy === 1, refreshed.user?.username)
+  const afterRefresh = await H['customers:list'](fakeEvent, { page: 1, pageSize: 50, search: 'Survives Refresh' })
+  ok('refresh keeps the target workspace (no fallback to company data)', afterRefresh.total === 1, afterRefresh.total)
+  const companyDuringRefresh = await H['customers:list'](fakeEvent, { page: 1, pageSize: 50, search: 'Super Only' })
+  ok('refreshed impersonation still cannot see the super admin data', companyDuringRefresh.total === 0, companyDuringRefresh.total)
+  await H['impersonation:stop'](fakeEvent)
+
+  // ---- two windows: switching in one must never change the other's data ----
+  const secondWindow = { sender: { id: 2 } }
+  await H['auth:login'](secondWindow as any, 'admin', 'admin123')
+  await H['impersonation:start'](fakeEvent, mgrUserId) // window 1 → A
+  await H['customers:create'](fakeEvent, { name: 'Window One A', mobile: '01755550011' })
+  await H['impersonation:start'](secondWindow as any, mgrBId) // window 2 → B
+  await H['customers:create'](secondWindow as any, { name: 'Window Two B', mobile: '01755550012' })
+  const w1List = await H['customers:list'](fakeEvent, { page: 1, pageSize: 50 })
+  const w2List = await H['customers:list'](secondWindow as any, { page: 1, pageSize: 50 })
+  ok('window 1 keeps account A data while window 2 impersonates B', w1List.total >= 3 && (w1List.rows as any[]).some((r) => r.name === 'Window One A') && (w1List.rows as any[]).every((r) => r.name !== 'Window Two B'), w1List.total)
+  ok('window 2 sees only account B data', w2List.total >= 2 && (w2List.rows as any[]).some((r) => r.name === 'Window Two B') && (w2List.rows as any[]).every((r) => r.name !== 'Window One A' && r.name !== 'Survives Refresh'), w2List.total)
+  const w1Super = await H['customers:list'](fakeEvent, { page: 1, pageSize: 50, search: 'Super Only' })
+  ok('window 1 never sees company data while impersonating', w1Super.total === 0, w1Super.total)
+  await H['impersonation:stop'](secondWindow as any)
+  await H['impersonation:stop'](fakeEvent)
+  await H['auth:logout'](secondWindow as any)
+  const superAfterWindows = await H['customers:list'](fakeEvent, { page: 1, pageSize: 50, search: 'Super Only' })
+  ok('both windows return to the super admin data after stopping', superAfterWindows.total > 0, superAfterWindows.total)
+
+  // ---- business settings are per workspace, installation settings are not ----
+  await H['impersonation:start'](fakeEvent, mgrUserId)
+  const settingsA = await H['settings:getAll'](fakeEvent)
+  await H['impersonation:stop'](fakeEvent)
+  await H['impersonation:start'](fakeEvent, mgrBId)
+  const settingsB = await H['settings:getAll'](fakeEvent)
+  await H['impersonation:stop'](fakeEvent)
+  ok('each workspace has its own company profile settings', !!settingsA.company_name && !!settingsB.company_name && settingsA.company_name !== settingsB.company_name, { a: settingsA.company_name, b: settingsB.company_name })
+  ok('installation security setting is shared, not per workspace', settingsA.session_timeout_min === '480' && settingsB.session_timeout_min === '480')
+
+  // ---- Collector workspace bootstrap: a collector can act in its own scope ----
+  await H['impersonation:start'](fakeEvent, rahimUserId)
+  const colMe = await H['payments:myCollector'](fakeEvent)
+  const colCustomers = await H['customers:list'](fakeEvent, { page: 1, pageSize: 50 })
+  ok('collector workspace bootstraps its own collector identity', colMe.locked === true && !!colMe.collector?.id, colMe)
+  ok('collector workspace starts without the company customers', colCustomers.total === 0, colCustomers.total)
+  await H['impersonation:stop'](fakeEvent)
+
+  // ==== SMS gateway + per-user SMS wallet (separate from money balances) ====
+  section('SMS gateway + per-user SMS wallet')
+  const SMS_ENV_KEYS = ['SMS_PROVIDER', 'SMS_GATEWAY_URL', 'SMS_SENDER_ID', 'SMS_API_KEY', 'SMS_API_SECRET', 'SMS_ENABLED', 'SMS_REFUND_ON_FAILED', 'SMS_BALANCE_URL', 'SMS_DLR_URL', 'SMS_LOW_BALANCE_THRESHOLD', 'SMS_EDGE_URL', 'SMS_EDGE_TOKEN']
+  const savedSmsEnv = Object.fromEntries(SMS_ENV_KEYS.map((k) => [k, process.env[k]]))
+  const realFetchSms = (global as any).fetch
+  process.env.SMS_PROVIDER = 'bulksmsbd'
+  process.env.SMS_GATEWAY_URL = 'https://gateway.test/api/smsapi'
+  process.env.SMS_BALANCE_URL = 'https://gateway.test/api/getBalanceApi'
+  process.env.SMS_DLR_URL = 'https://gateway.test/api/deliveryReportApi'
+  process.env.SMS_SENDER_ID = 'AVA'
+  process.env.SMS_API_KEY = 'test-api-key'
+  process.env.SMS_API_SECRET = 'test-api-secret'
+  delete process.env.SMS_ENABLED
+  delete process.env.SMS_REFUND_ON_FAILED
+  delete process.env.SMS_LOW_BALANCE_THRESHOLD
+  delete process.env.SMS_EDGE_URL
+  delete process.env.SMS_EDGE_TOKEN
+
+  let smsFetchMode: 'ok' | 'fail' = 'ok'
+  let smsDlrMode: 'DELIVERED' | 'FAILED' = 'DELIVERED'
+  let smsProviderBalance: 'ok' | 'zero' = 'ok'
+  let smsProviderCode: number | null = null
+  let smsEdgeCalls = 0
+  let lastEdgeBody: any = null
+  let smsFetchCalls = 0
+  let lastSmsUrl: URL | null = null
+  let lastBulkUrl: URL | null = null
+  let lastBulkBody: URLSearchParams | null = null
+  const jsonResponse = (body: any) => ({
+    ok: true, status: 200,
+    json: async () => body,
+    text: async () => JSON.stringify(body)
+  })
+  ;(global as any).fetch = async (input: any, init?: any) => {
+    const url = new URL(String(input))
+    smsFetchCalls++
+    if (url.hostname === 'edge.test') {
+      smsEdgeCalls++
+      const body = JSON.parse(String(init?.body || '{}'))
+      lastEdgeBody = body
+      if (body.action === 'balance') return jsonResponse({ ok: true, balance: 5000, unit: 'currency', raw: '{"balance":5000}' })
+      if (body.action === 'dlr') return jsonResponse({ ok: true, provider_status: smsDlrMode, raw: JSON.stringify({ status: smsDlrMode }) })
+      if (body.action === 'send') {
+        if (smsProviderCode) return jsonResponse({ ok: false, error: `${smsProviderCode}: Provider balance is insufficient` })
+        return jsonResponse({ ok: true, response_code: '202', status: 'submitted', provider_message_id: 'edge-' + smsEdgeCalls, raw: '{"response_code":202}' })
+      }
+      return jsonResponse({ ok: false, error: 'UNKNOWN_ACTION' })
+    }
+    if (url.pathname.endsWith('/getBalanceApi')) {
+      return jsonResponse(smsProviderBalance === 'zero' ? { balance: 0, currency: 'BDT' } : { balance: 5000, currency: 'BDT' })
+    }
+    if (url.pathname.endsWith('/deliveryReportApi')) {
+      return jsonResponse({ status: smsDlrMode, sms_id: url.searchParams.get('sms_id') })
+    }
+    if (url.pathname.endsWith('/smsapimany')) {
+      lastBulkUrl = url
+      lastBulkBody = new URLSearchParams(String(init?.body || ''))
+      if (smsProviderCode) return jsonResponse({ response_code: smsProviderCode, error_message: 'Balance Insufficient' })
+      return jsonResponse({ response_code: 202, success_message: 'SMS Submitted Successfully', error_message: '', sms_id: 'bulk-' + smsFetchCalls })
+    }
+    lastSmsUrl = url
+    if (smsFetchMode === 'fail') {
+      return { ok: false, status: 502, json: async () => ({ error: 'gateway down' }), text: async () => 'gateway down' }
+    }
+    if (smsProviderCode) {
+      return jsonResponse({ response_code: smsProviderCode, success_message: '', error_message: 'Balance Insufficient' })
+    }
+    return jsonResponse({
+      response_code: 202,
+      success_message: 'SMS Submitted Successfully',
+      error_message: '',
+      sms_id: 'gw-' + smsFetchCalls
+    })
+  }
+
+  // Collector has the seeded messaging + sms module keys.
+  const smsUser1Id = await H['users:create'](fakeEvent, { username: 'smsuser1', password: 'secret1', full_name: 'SMS User One', role_id: staffRoleId }) as number
+  const smsUser2Id = await H['users:create'](fakeEvent, { username: 'smsuser2', password: 'secret1', full_name: 'SMS User Two', role_id: staffRoleId }) as number
+  const walletRowsForNewUsers = Number((db.prepare('SELECT COUNT(*) AS c FROM sms_wallets WHERE user_id IN (?,?)').get(smsUser1Id, smsUser2Id) as any).c)
+  ok('every new account gets its own real 0-SMS wallet row automatically', walletRowsForNewUsers === 2, walletRowsForNewUsers)
+  const smsU1 = { sender: { id: 30 } }
+  const smsU2 = { sender: { id: 31 } }
+  await H['auth:login'](smsU1 as any, 'smsuser1', 'secret1')
+  await H['auth:login'](smsU2 as any, 'smsuser2', 'secret1')
+
+  const gatewayData = {
+    provider: 'bulksmsbd', gatewayUrl: 'https://gateway.test/api/smsapi',
+    balanceUrl: 'https://gateway.test/api/getBalanceApi', dlrUrl: 'https://gateway.test/api/deliveryReportApi',
+    senderId: 'AVA', enabled: true, refundOnFailed: true, lowBalanceThreshold: 100
+  }
+  const mbBeforeSms = await H['accounts:mainBalance'](fakeEvent)
+  const cfg0 = await H['sms:admin:configSet'](fakeEvent, gatewayData)
+  ok('Super Admin can configure the BulkSMSBD gateway', cfg0.provider === 'bulksmsbd' && cfg0.enabled === true && cfg0.configured === true && !!cfg0.balanceUrl && !!cfg0.dlrUrl, cfg0)
+  ok('gateway config never exposes the API key/secret', !('apiKey' in cfg0) && !('apiSecret' in cfg0) && cfg0.apiKeyConfigured === true && cfg0.apiSecretConfigured === true, cfg0)
+
+  const smsPackageId = await H['sms:admin:packageSave'](fakeEvent, { name: 'Starter 100', smsCount: 100, price: 500, status: 'active', description: '100 SMS' })
+  ok('Super Admin creates a real SMS package', smsPackageId > 0)
+  const packagesForUser = await H['sms:packages'](smsU1 as any)
+  const hasPlan = (count: number, price: number) => packagesForUser.some((p: any) => Number(p.sms_count) === count && Number(p.price) === price)
+  ok('default SMS plans: 1,000 / 5,000 / 10,000 at 0.42 per SMS', hasPlan(1000, 420) && hasPlan(5000, 2100) && hasPlan(10000, 4200), packagesForUser)
+  ok('user can see active SMS packages', packagesForUser.some((p: any) => p.id === smsPackageId && Number(p.sms_count) === 100))
+
+  const w0 = await H['sms:wallet'](smsU1 as any)
+  ok('new user starts with a real 0 SMS balance (no fake credit)', w0.balance === 0 && w0.totalPurchased === 0 && w0.totalUsed === 0 && w0.lowBalance === true && w0.lowThreshold === 100, w0)
+  let noIdemErr = ''
+  try { await H['sms:send'](smsU1 as any, { recipient: '01712345678', message: 'No idempotency key' }) } catch (e: any) { noIdemErr = String(e) }
+  ok('duplicate protection requires an explicit idempotency key', noIdemErr.includes('IDEMPOTENCY_KEY_REQUIRED') && smsFetchCalls === 0, { noIdemErr, smsFetchCalls })
+  let noBalanceErr = ''
+  try { await H['sms:send'](smsU1 as any, { recipient: '01712345678', message: 'No balance', clientRequestId: 'sms-nobalance' }) } catch (e: any) { noBalanceErr = String(e) }
+  ok('send is blocked before the gateway when the wallet is empty', noBalanceErr.includes('SMS_BALANCE_INSUFFICIENT') && smsFetchCalls === 0, { noBalanceErr, smsFetchCalls })
+
+  const purchase = await H['sms:createPurchase'](smsU1 as any, { packageId: smsPackageId, method: 'bkash', trxId: 'SMS-TRX-001', note: 'real bKash payment' })
+  ok('user can submit a package purchase request', purchase.purchase?.status === 'pending' && purchase.purchase?.smsCount === 100, purchase)
+  const wBeforeVerify = await H['sms:wallet'](smsU1 as any)
+  ok('purchase request does NOT credit before verification', wBeforeVerify.balance === 0, wBeforeVerify.balance)
+  const purchaseDup = await H['sms:createPurchase'](smsU1 as any, { packageId: smsPackageId, method: 'bkash', trxId: 'SMS-TRX-001' })
+  ok('duplicate purchase request does not create a second request', purchaseDup.duplicate === true && purchaseDup.purchase.id === purchase.purchase.id, purchaseDup)
+
+  const verified = await H['sms:admin:verifyPurchase'](fakeEvent, purchase.purchase.id, 'approve', 'verified against bKash statement')
+  ok('verified payment credits exactly the package SMS', verified.credited === 100 && verified.wallet.balance === 100, verified)
+  const verifiedAgain = await H['sms:admin:verifyPurchase'](fakeEvent, purchase.purchase.id, 'approve')
+  ok('duplicate payment callback cannot double-credit', verifiedAgain.already === true && verifiedAgain.wallet.balance === 100, verifiedAgain)
+  const purchaseLedger = Number((db.prepare("SELECT COUNT(*) AS c FROM sms_transactions WHERE user_id = ? AND type = 'purchase'").get(smsUser1Id) as any).c)
+  ok('exactly one purchase ledger row exists', purchaseLedger === 1, purchaseLedger)
+
+  const out1 = await H['sms:send'](smsU1 as any, { recipient: '01712345678', message: 'Hello from AVA', clientRequestId: 'sms-send-1' })
+  ok('SMS is sent through the server-side BulkSMSBD gateway', out1.status === 'sent' && out1.smsCount === 1 && !!out1.providerMessageId && !!out1.requestId, out1)
+  ok('gateway response/request ID are stored', !!out1.gatewayResponse && String(out1.gatewayResponse).includes('202') && out1.requestId?.startsWith('SMS-'), out1)
+  const out1Row = db.prepare('SELECT status, delivered_at FROM sms_messages WHERE id = ?').get(out1.messageId) as any
+  ok('response 202 is recorded as SUBMITTED, never auto-delivered', out1Row?.status === 'sent' && !out1Row?.delivered_at, out1Row)
+  ok('BulkSMSBD receives normalized recipient, message and text encoding',
+    lastSmsUrl?.searchParams.get('number') === '8801712345678' &&
+    lastSmsUrl?.searchParams.get('message') === 'Hello from AVA' &&
+    lastSmsUrl?.searchParams.get('senderid') === 'AVA' &&
+    lastSmsUrl?.searchParams.get('type') === 'text' &&
+    lastSmsUrl?.searchParams.get('api_key') === 'test-api-key', lastSmsUrl?.toString())
+  const wAfter1 = await H['sms:wallet'](smsU1 as any)
+  ok('SMS balance deducted by the exact segment count', wAfter1.balance === 99 && wAfter1.totalUsed === 1 && wAfter1.lowBalance === true, wAfter1)
+  ok('wallet exposes submitted/delivered/failed counters separately', wAfter1.statusCounts?.submitted === 1 && wAfter1.statusCounts?.delivered === 0 && wAfter1.statusCounts?.failed === 0, wAfter1.statusCounts)
+
+  const balBeforeProviderZero = wAfter1.balance
+  smsProviderBalance = 'zero'
+  let providerZeroErr = ''
+  try { await H['sms:send'](smsU1 as any, { recipient: '01712345678', message: 'Provider balance guard', clientRequestId: 'sms-provider-zero' }) } catch (e: any) { providerZeroErr = String(e) }
+  const balAfterProviderZero = (await H['sms:wallet'](smsU1 as any)).balance
+  const providerZeroRows = Number((db.prepare("SELECT COUNT(*) AS c FROM sms_messages WHERE idempotency_key LIKE '%sms-provider-zero%'").get() as any).c)
+  ok('insufficient shared provider balance blocks before any wallet debit', providerZeroErr.includes('SMS_PROVIDER_BALANCE_INSUFFICIENT') && balAfterProviderZero === balBeforeProviderZero && providerZeroRows === 0, { providerZeroErr, balBeforeProviderZero, balAfterProviderZero, providerZeroRows })
+  smsProviderBalance = 'ok'
+
+  const balBefore1007 = (await H['sms:wallet'](smsU1 as any)).balance
+  smsProviderCode = 1007
+  const code1007 = await H['sms:send'](smsU1 as any, { recipient: '01712345678', message: 'Provider code mapping', clientRequestId: 'sms-code-1007' })
+  const balAfter1007 = (await H['sms:wallet'](smsU1 as any)).balance
+  ok('BulkSMSBD error codes are mapped and the failed send is refunded', code1007.status === 'failed' && String(code1007.error).includes('1007') && code1007.refunded === true && balAfter1007 === balBefore1007, { code1007, balBefore1007, balAfter1007 })
+  smsProviderCode = null
+  const messageCountBeforeDup = Number((db.prepare('SELECT COUNT(*) AS c FROM sms_messages WHERE user_id = ?').get(smsUser1Id) as any).c)
+  const outDup = await H['sms:send'](smsU1 as any, { recipient: '01712345678', message: 'Hello from AVA', clientRequestId: 'sms-send-1' })
+  const wAfterDup = await H['sms:wallet'](smsU1 as any)
+  ok('duplicate send request is idempotent (no second debit)', outDup.duplicate === true && wAfterDup.balance === 99, { outDup, wAfterDup })
+  const messageCount = Number((db.prepare('SELECT COUNT(*) AS c FROM sms_messages WHERE user_id = ?').get(smsUser1Id) as any).c)
+  ok('duplicate send created no extra message row', messageCount === messageCountBeforeDup, { messageCount, messageCountBeforeDup })
+
+  const unicodeText = 'ক'.repeat(80)
+  const out2 = await H['sms:send'](smsU1 as any, { recipient: '01812345678', message: unicodeText, clientRequestId: 'sms-send-2' })
+  ok('Bangla unicode message uses type=unicode and correct segments', out2.status === 'sent' && out2.smsCount === 2 && out2.encoding === 'unicode' && lastSmsUrl?.searchParams.get('type') === 'unicode', { out2, type: lastSmsUrl?.searchParams.get('type') })
+
+  const wBeforeFail = await H['sms:wallet'](smsU1 as any)
+  smsFetchMode = 'fail'
+  const outFail = await H['sms:send'](smsU1 as any, { recipient: '01912345678', message: 'This should fail', clientRequestId: 'sms-send-fail' })
+  const wAfterFail = await H['sms:wallet'](smsU1 as any)
+  ok('provider failure is stored as failed', outFail.status === 'failed' && !!outFail.error, outFail)
+  ok('failed SMS is refunded by the configured policy', outFail.refunded === true && wAfterFail.balance === wBeforeFail.balance, { before: wBeforeFail.balance, after: wAfterFail.balance, outFail })
+  const refundLedger = Number((db.prepare("SELECT COUNT(*) AS c FROM sms_transactions WHERE user_id = ? AND type = 'refund'").get(smsUser1Id) as any).c)
+  ok('every provider failure/refund is recorded in the wallet ledger', refundLedger === 2, refundLedger)
+  smsFetchMode = 'ok'
+
+  const wu2 = await H['sms:wallet'](smsU2 as any)
+  const mu2 = await H['sms:messages'](smsU2 as any, { page: 1, pageSize: 50 })
+  const tu2 = await H['sms:transactions'](smsU2 as any, { page: 1, pageSize: 50 })
+  ok('another user has an independent zero wallet', wu2.balance === 0 && wu2.totalPurchased === 0, wu2)
+  ok('another user cannot see the first user SMS history', mu2.total === 0 && tu2.total === 0, { messages: mu2.total, tx: tu2.total })
+  let adminDenied = ''
+  try { await H['sms:admin:wallets'](smsU2 as any, {}) } catch (e: any) { adminDenied = String(e) }
+  ok('non-super user cannot open SMS admin/wallets', adminDenied.includes('PERMISSION_DENIED'), adminDenied)
+
+  const adminWallets = await H['sms:admin:wallets'](fakeEvent, { search: 'smsuser' })
+  ok('Super Admin sees every user SMS wallet', (adminWallets.rows as any[]).length === 2 && (adminWallets.rows as any[]).some((r) => r.userId === smsUser1Id && r.balance === wAfterFail.balance), adminWallets)
+  const adminU1 = (adminWallets.rows as any[]).find((r) => r.userId === smsUser1Id)
+  ok('Super Admin sees each user’s submitted/delivered/failed counters', adminU1?.statusCounts?.submitted === 2 && adminU1?.statusCounts?.failed === 2 && adminU1?.statusCounts?.delivered === 0, adminU1?.statusCounts)
+  const adminTx = await H['sms:admin:transactions'](fakeEvent, { userId: smsUser1Id, page: 1, pageSize: 50 })
+  ok('Super Admin sees user SMS transactions', adminTx.total >= 4 && (adminTx.rows as any[]).every((r) => r.userId === smsUser1Id), adminTx.total)
+  const adminMsgs = await H['sms:admin:messages'](fakeEvent, { userId: smsUser1Id, page: 1, pageSize: 50 })
+  ok('Super Admin sees all SMS statuses', adminMsgs.rows.some((r: any) => r.status === 'sent') && adminMsgs.rows.some((r: any) => r.status === 'failed'), adminMsgs.rows.map((r: any) => r.status))
+  const storedOut1 = adminMsgs.rows.find((r: any) => r.id === out1.messageId)
+  ok('message history stores recipient/message/count/request/gateway response',
+    storedOut1?.recipient === '8801712345678' && storedOut1?.message === 'Hello from AVA' &&
+    storedOut1?.smsCount === 1 && !!storedOut1?.requestId && !!storedOut1?.gatewayResponse,
+    storedOut1)
+
+  const adj1 = await H['sms:admin:adjust'](fakeEvent, smsUser2Id, 10, 'manual correction', 'adj-request-1')
+  const adj2 = await H['sms:admin:adjust'](fakeEvent, smsUser2Id, 10, 'manual correction', 'adj-request-1')
+  ok('Super Admin balance adjustment is atomic + audited', adj1.wallet.balance === 10 && adj1.transaction.type === 'adjustment', adj1)
+  ok('duplicate adjustment request does not double-add', adj2.duplicate === true && adj2.wallet.balance === 10, adj2)
+  let negErr = ''
+  try { await H['sms:admin:adjust'](fakeEvent, smsUser2Id, -20, 'too much', 'adj-request-2') } catch (e: any) { negErr = String(e) }
+  ok('adjustment can never make the SMS wallet negative', negErr.includes('SMS_BALANCE_CANNOT_BE_NEGATIVE'), negErr)
+
+  const walletBeforeProviderPurchase = (await H['sms:wallet'](smsU1 as any)).balance
+  const providerPurchase = await H['sms:admin:providerPurchase'](fakeEvent, {
+    provider: 'bulksmsbd', smsCount: 1000, amount: 1200, method: 'bank', trxId: 'PROV-TRX-001', note: 'shared gateway top-up'
+  })
+  const providerPurchaseDup = await H['sms:admin:providerPurchase'](fakeEvent, {
+    provider: 'bulksmsbd', smsCount: 1000, amount: 1200, method: 'bank', trxId: 'PROV-TRX-001'
+  })
+  const providerPurchaseList = await H['sms:admin:providerPurchases'](fakeEvent, { page: 1, pageSize: 20 })
+  ok('Super Admin can record a real provider credit purchase', providerPurchase.purchase?.smsCount === 1000 && providerPurchase.purchase?.amount === 1200, providerPurchase)
+  ok('duplicate provider purchase cannot be recorded twice', providerPurchaseDup.duplicate === true && providerPurchaseList.total === 1, { providerPurchaseDup, total: providerPurchaseList.total })
+  ok('provider purchase never touches an individual user wallet', (await H['sms:wallet'](smsU1 as any)).balance === walletBeforeProviderPurchase)
+
+  const balBeforeGw = (await H['sms:wallet'](smsU1 as any)).balance
+  const gwBal = await H['sms:admin:gatewayBalance'](fakeEvent)
+  const balAfterGw = (await H['sms:wallet'](smsU1 as any)).balance
+  ok('BulkSMSBD Balance Check API returns the provider balance', gwBal.balance === 5000 && gwBal.provider === 'bulksmsbd', gwBal)
+  ok('gateway balance check does not touch a user wallet', balAfterGw === balBeforeGw, { balBeforeGw, balAfterGw })
+
+  const balBeforeTest = (await H['sms:wallet'](smsU1 as any)).balance
+  const gwTest = await H['sms:admin:testGateway'](fakeEvent, '01712345678')
+  const balAfterTest = (await H['sms:wallet'](smsU1 as any)).balance
+  ok('Super Admin gateway test uses the real BulkSMSBD adapter', gwTest.ok === true && !!gwTest.providerMessageId, gwTest)
+  ok('gateway test does not debit any wallet', balAfterTest === balBeforeTest, { balBeforeTest, balAfterTest })
+
+  smsDlrMode = 'DELIVERED'
+  const dlrDelivered = await H['sms:admin:checkDelivery'](fakeEvent, out1.messageId)
+  ok('delivery report updates sent → delivered', dlrDelivered.status === 'delivered' && !!dlrDelivered.deliveredAt && !!dlrDelivered.deliveryCheckedAt, dlrDelivered)
+  ok('delivery report stores provider response and request ID', !!dlrDelivered.requestId && String(dlrDelivered.gatewayResponse).includes('DELIVERED'), dlrDelivered)
+  const balAfterDelivered = (await H['sms:wallet'](smsU1 as any)).balance
+  let deliveredDowngradeErr = ''
+  try { await H['sms:admin:updateStatus'](fakeEvent, out1.messageId, 'failed') } catch (e: any) { deliveredDowngradeErr = String(e) }
+  ok('a delivered SMS can never be downgraded to failed/refunded', deliveredDowngradeErr.includes('SMS_ALREADY_DELIVERED') && (await H['sms:wallet'](smsU1 as any)).balance === balAfterDelivered, deliveredDowngradeErr)
+
+  smsDlrMode = 'FAILED'
+  const balBeforeDlrFail = (await H['sms:wallet'](smsU1 as any)).balance
+  const dlrFailed = await H['sms:admin:checkDelivery'](fakeEvent, out2.messageId)
+  const balAfterDlrFail = (await H['sms:wallet'](smsU1 as any)).balance
+  ok('failed delivery applies the refund policy', dlrFailed.status === 'failed' && dlrFailed.refunded === true && balAfterDlrFail === balBeforeDlrFail + Number(out2.smsCount), { dlrFailed, balBeforeDlrFail, balAfterDlrFail })
+  await H['sms:admin:checkDelivery'](fakeEvent, out2.messageId)
+  ok('repeated DLR failure cannot refund twice', (await H['sms:wallet'](smsU1 as any)).balance === balAfterDlrFail)
+  let failedUpgradeErr = ''
+  try { await H['sms:admin:updateStatus'](fakeEvent, out2.messageId, 'delivered') } catch (e: any) { failedUpgradeErr = String(e) }
+  ok('a failed/refunded SMS cannot be flipped back to a free delivered SMS', /SMS_ALREADY_(FAILED|REFUNDED)/.test(failedUpgradeErr), failedUpgradeErr)
+  smsDlrMode = 'DELIVERED'
+
+  const out3 = await H['sms:send'](smsU1 as any, { recipient: '01612345678', message: 'DLR sync message', clientRequestId: 'sms-send-3' })
+  const sync = await H['sms:admin:syncDelivery'](fakeEvent, { limit: 25 })
+  const out3Row = (await H['sms:messages'](smsU1 as any, { page: 1, pageSize: 50 })).rows.find((r: any) => r.id === out3.messageId)
+  ok('Super Admin can sync pending delivery reports', sync.checked >= 1 && sync.delivered >= 1 && sync.errors === 0, sync)
+  ok('synced delivery report is persisted', out3Row?.status === 'delivered' && !!out3Row?.deliveryCheckedAt, out3Row)
+
+  const manual = await H['sms:admin:updateStatus'](fakeEvent, out3.messageId, 'delivered')
+  ok('manual delivery override remains available', manual.status === 'delivered', manual)
+
+  const balBeforeNoRefund = (await H['sms:wallet'](smsU1 as any)).balance
+  await H['sms:admin:configSet'](fakeEvent, { ...gatewayData, refundOnFailed: false })
+  smsFetchMode = 'fail'
+  const noRefund = await H['sms:send'](smsU1 as any, { recipient: '01799999999', message: 'Policy test', clientRequestId: 'sms-norefund' })
+  const balAfterNoRefund = (await H['sms:wallet'](smsU1 as any)).balance
+  ok('refund policy can be disabled by the Super Admin', noRefund.status === 'failed' && noRefund.refunded === false && balAfterNoRefund === balBeforeNoRefund - Number(noRefund.smsCount), { noRefund, balBeforeNoRefund, balAfterNoRefund })
+  smsFetchMode = 'ok'
+  await H['sms:admin:configSet'](fakeEvent, gatewayData)
+
+  // Optional secure proxy mode: the desktop never sees the provider API key.
+  process.env.SMS_EDGE_URL = 'https://edge.test/bulksmsbd'
+  process.env.SMS_EDGE_TOKEN = 'edge-secret-token'
+  const edgeWalletBefore = (await H['sms:wallet'](smsU1 as any)).balance
+  const edgeSend = await H['sms:send'](smsU1 as any, { recipient: '01712345678', message: 'Via Supabase Edge Function', clientRequestId: 'sms-edge-1' })
+  const edgeRequestBody = lastEdgeBody
+  ok('Supabase Edge Function mode sends through the secure proxy', edgeSend.status === 'sent' && String(edgeSend.providerMessageId || '').startsWith('edge-') && edgeRequestBody?.action === 'send', { edgeSend, edgeRequestBody })
+  ok('provider API key is never sent by the desktop in Edge mode', !('api_key' in (edgeRequestBody || {})) && !('senderid' in (edgeRequestBody || {})), edgeRequestBody)
+  const edgeBalance = await H['sms:admin:gatewayBalance'](fakeEvent)
+  ok('provider balance is also routed through the Edge Function', edgeBalance.balance === 5000 && lastEdgeBody?.action === 'balance', edgeBalance)
+  ok('Edge-mode send still debits only the exact user wallet parts', (await H['sms:wallet'](smsU1 as any)).balance === edgeWalletBefore - 1)
+  delete process.env.SMS_EDGE_URL
+  delete process.env.SMS_EDGE_TOKEN
+
+  // Personalized bulk endpoint (BulkSMSBD smsapimany).
+  const bulkWalletBefore = (await H['sms:wallet'](smsU1 as any)).balance
+  const bulkMessages = [
+    { recipient: '01712345678', message: 'ক'.repeat(80) },
+    { recipient: '01812345678', message: 'ক'.repeat(80) }
+  ]
+  const bulk = await H['sms:sendBulk'](smsU1 as any, { messages: bulkMessages, clientRequestId: 'sms-bulk-1' })
+  const bulkWalletAfter = (await H['sms:wallet'](smsU1 as any)).balance
+  const bulkPayload = JSON.parse(String(lastBulkBody?.get('messages') || '[]'))
+  ok('personalized bulk SMS uses the official smsapimany endpoint', !!lastBulkUrl && lastBulkUrl.pathname.endsWith('/smsapimany') && lastBulkBody?.get('senderid') === 'AVA', { url: lastBulkUrl?.toString(), senderid: lastBulkBody?.get('senderid') })
+  ok('bulk batch sends every recipient/message and adds 202 as submitted', bulk.status === 'sent' && bulk.count === 2 && bulk.totalSms === 4 && bulk.messages?.length === 2 && bulk.messages.every((m: any) => m.status === 'sent'), bulk)
+  ok('bulk payload contains all personalized recipients', bulkPayload.length === 2 && bulkPayload[0].to === '8801712345678' && bulkPayload[1].to === '8801812345678', bulkPayload)
+  ok('bulk wallet debit equals the exact total billable parts', bulkWalletAfter === bulkWalletBefore - 4, { bulkWalletBefore, bulkWalletAfter })
+  const bulkDup = await H['sms:sendBulk'](smsU1 as any, { messages: bulkMessages, clientRequestId: 'sms-bulk-1' })
+  ok('duplicate bulk request is idempotent (no second debit)', bulkDup.duplicate === true && (await H['sms:wallet'](smsU1 as any)).balance === bulkWalletAfter, bulkDup)
+
+  const mbAfterSms = await H['accounts:mainBalance'](fakeEvent)
+  ok('SMS wallet is completely separate from the main financial balance', mbAfterSms.balance === mbBeforeSms.balance, { before: mbBeforeSms.balance, after: mbAfterSms.balance })
+
+  const walletBeforeImp = await H['sms:wallet'](smsU1 as any)
+  await H['impersonation:start'](fakeEvent, smsUser1Id)
+  const impWallet = await H['sms:wallet'](fakeEvent)
+  const impMsgs = await H['sms:messages'](fakeEvent, { page: 1, pageSize: 50 })
+  ok('Login As User shows that user’s SMS wallet', impWallet.userId === smsUser1Id && impWallet.balance === walletBeforeImp.balance, impWallet)
+  ok('Login As User SMS history is scoped to the target user', impMsgs.total > 0 && (impMsgs.rows as any[]).every((r) => r.userId === smsUser1Id), impMsgs.total)
+  await H['impersonation:stop'](fakeEvent)
+
+  const auditActions = (db.prepare("SELECT action FROM activity_logs WHERE module = 'sms'").all() as any[]).map((r) => r.action)
+  ok('SMS audit log covers purchase/usage/refund/adjustment/config/provider',
+    ['sms_purchase_verified', 'sms_sent', 'sms_failed', 'sms_refunded', 'sms_balance_adjusted', 'sms_gateway_config_saved', 'sms_gateway_balance_checked', 'sms_delivery_checked', 'sms_delivery_synced', 'sms_provider_purchase_recorded', 'sms_provider_balance_insufficient', 'sms_bulk_sent'].every((a) => auditActions.includes(a)), auditActions)
+
+  ;(global as any).fetch = realFetchSms
+  for (const k of SMS_ENV_KEYS) {
+    if (savedSmsEnv[k] === undefined) delete process.env[k]
+    else process.env[k] = savedSmsEnv[k] as string
+  }
+  await H['auth:logout'](smsU1 as any)
+  await H['auth:logout'](smsU2 as any)
 
   // ==== due reminders: generate, dedupe, edit, empty state ====
   section('due reminders — generate + duplicate prevention')

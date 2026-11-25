@@ -7,6 +7,7 @@ import Login from './pages/Login'
 import SubscriptionGate from './pages/SubscriptionGate'
 import UpdateGate from './pages/UpdateGate'
 import Dashboard from './pages/Dashboard'
+import CollectorDashboard from './pages/CollectorDashboard'
 import SupportNumbers from './pages/SupportNumbers'
 import CustomersPage from './pages/Customers'
 import CustomerProfile from './pages/CustomerProfile'
@@ -21,7 +22,7 @@ import SecurityPage from './pages/Security'
 import AutomationPage from './pages/Automation'
 import { EntityPage } from './components/EntityPage'
 import { UserInfo } from '@shared/types'
-import { errMsg } from './lib/api'
+import { errMsg, clearClientAccountState } from './lib/api'
 import { PermProvider } from './lib/perms'
 import { monthStartEnd, thisMonth, prevMonth } from './lib/format'
 import { AreasCollection } from './pages/Reports'
@@ -36,6 +37,9 @@ import { DailyPaymentsPage } from './pages/DailyPayments'
 import { RenewalsPage } from './pages/Renewals'
 import SubscriptionRenewalPage from './pages/SubscriptionRenewal'
 import { ImportExportPage } from './pages/ImportExport'
+import UserManagementPage from './pages/UserManagement'
+import SmsWalletPage from './pages/SmsWallet'
+import SmsAdminPage from './pages/SmsAdmin'
 
 function AppInner() {
   const { t, lang } = useI18n()
@@ -86,12 +90,28 @@ function AppInner() {
 
   const E = (entity: string, titleKey: string, props?: any) => <EntityPage entity={entity} title={t(titleKey)} {...props} />
 
+  // Collector accounts land on the Collector Dashboard (their own scoped KPIs);
+  // every other account sees the full administrator dashboard unchanged.
+  function DashboardHome() {
+    const u = user as any
+    const perms: string[] = u?.permissions || []
+    const roleName = String(u?.roleName || '')
+    // Full-access roles always get the administrator dashboard. The KPI-only
+    // heuristic is for restricted FIELD roles and must never capture an
+    // Administrator whose role permissions were edited (or a stale session).
+    const fullDashboardRole = roleName === 'Administrator' || roleName === 'SUPER_ADMIN' || roleName === 'Manager'
+    const isCollectorAccount = !fullDashboardRole && (roleName === 'Collector' ||
+      (!perms.includes('dashboard') && perms.some((p) => p.startsWith('dashboard.kpi.'))))
+    return isCollectorAccount ? <CollectorDashboard /> : <Dashboard />
+  }
+
   return (
     <PermProvider user={user}>
     <HashRouter>
       <Routes>
-        <Route element={<Layout user={user} onLogout={() => window.api.auth.logout().then(() => setUser(null))} />}>
-          <Route path="/dashboard" element={<Dashboard />} />
+        <Route element={<Layout user={user} onLogout={() => window.api.auth.logout().then(() => setUser(null))}
+          onReturnToSuper={() => window.api.impersonation.stop().then(() => { clearClientAccountState(); window.location.reload() }).catch(() => {})} />}>
+          <Route path="/dashboard" element={<DashboardHome />} />
           <Route path="/pppoe" element={E('pppoe_users', 'm_pppoe')} />
           <Route path="/pppoe/active" element={<EntityPage entity="pppoe_users" title={t('m_pppoe_active')} fixedFilters={{ status: 'active' }} />} />
           <Route path="/cashier" element={<CashbookPage />} />
@@ -162,6 +182,10 @@ function AppInner() {
           <Route path="/messages/history" element={<MessagesPages mode="history" />} />
           <Route path="/templates" element={E('sms_templates', 'messages_templates')} />
 
+          {/* Per-user SMS wallet + Super Admin SMS management */}
+          <Route path="/sms" element={<SmsWalletPage />} />
+          <Route path="/sms/admin" element={<SmsAdminPage />} />
+
           {/* Complaints */}
           <Route path="/complaints" element={<ComplaintsPage />} />
 
@@ -191,6 +215,8 @@ function AppInner() {
           <Route path="/automation" element={<AutomationPage />} />
           <Route path="/branches" element={E('branches', 'branches_all')} />
           <Route path="/security/users" element={<SecurityPage tab="users" />} />
+          {/* Super Admin only — Supabase directory + secure Login As User */}
+          <Route path="/security/user-accounts" element={<UserManagementPage />} />
           <Route path="/security/roles" element={<SecurityPage tab="roles" />} />
           <Route path="/security/logs" element={<SecurityPage tab="logs" />} />
           <Route path="/security/logins" element={<SecurityPage tab="logins" />} />

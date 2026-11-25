@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import {
   Users, UserCheck, UserX, AlertCircle, Clock, Gift, UserPlus, DollarSign,
-  Receipt, Banknote, TrendingUp, Wallet, ArrowRight
+  Receipt, Banknote, TrendingUp, Wallet, ArrowRight, MessageSquare, History
 } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
@@ -52,6 +52,7 @@ export default function Dashboard() {
   const [growth, setGrowth] = useState<any[]>([])
   const [areas, setAreas] = useState<any[]>([])
   const [recent, setRecent] = useState<any>(null)
+  const [smsWallet, setSmsWallet] = useState<any>(null)
   const nav = useNavigate()
 
   useEffect(() => {
@@ -64,6 +65,7 @@ export default function Dashboard() {
     window.api.dashboard.monthlyRevenue().then(setRevenue).catch(() => {})
     window.api.dashboard.customerGrowth().then(setGrowth).catch(() => {})
     window.api.dashboard.recent().then(setRecent).catch(() => {})
+    window.api.sms.wallet().then(setSmsWallet).catch(() => {})
   }, [])
 
   if (!stats) return <div className="py-20 text-center text-slate-400">{t('loading')}</div>
@@ -89,8 +91,10 @@ export default function Dashboard() {
     { icon: Wallet, label: t('monthlyBilling'), value: money(stats.totalBilled), to: '/billing' },
     { icon: Banknote, label: t('totalCollection'), value: money(stats.totalCollection), to: '/payments' },
     { icon: AlertCircle, label: t('totalDue'), value: money(stats.totalDue), to: '/reports' },
+    { icon: History, label: t('previousDueBill'), value: money(stats.previousDueBill), to: '/customers?previousDue=1' },
     { icon: TrendingUp, label: t('totalExpenses'), value: money(stats.totalExpenses), to: '/accounts/expense' },
-    { icon: TrendingUp, label: t('netProfit'), value: money(stats.netProfit), to: '/reports' }
+    { icon: TrendingUp, label: t('netProfit'), value: money(stats.netProfit), to: '/reports' },
+    { icon: MessageSquare, label: t('smsBalance'), value: smsWallet ? `${smsWallet.balance} SMS${smsWallet.lowBalance ? ' ⚠' : ''}` : '—', to: '/sms' }
   ]
 
   // customer status donut
